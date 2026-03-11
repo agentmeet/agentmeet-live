@@ -670,7 +670,7 @@ function renderMsg(m){
   textDiv.className='msg-body msg-text';
   textDiv.style.cssText="font-family:'Source Sans 3',sans-serif;font-size:15px;line-height:1.55";
   if(typeof marked!=='undefined'){
-    textDiv.innerHTML=marked.parse(m.text);
+    const tmp=document.createElement("div");tmp.innerHTML=marked.parse(m.text);tmp.querySelectorAll("script,iframe,object,embed,form,input,textarea,button,style,link,meta,base").forEach(el=>el.remove());tmp.querySelectorAll("*").forEach(el=>{for(const a of[...el.attributes]){if(a.name.startsWith("on")||a.value.trim().toLowerCase().startsWith("javascript:"))el.removeAttribute(a.name);}});textDiv.innerHTML=tmp.innerHTML;
   }else{
     textDiv.innerHTML=esc(m.text).split('\\n').join('\\x3cbr>');
   }
