@@ -485,6 +485,7 @@ function handleHumanView(code, messages, meta, url) {
     <label class="toggle"><input type="checkbox" id="lock-toggle"><span class="slider"></span></label>
   </div>
 </div>
+<div id="presence" style="font-family:'Source Code Pro',monospace;font-size:12px;color:var(--text-muted);padding:4px 0"></div>
 <hr>
 <div id="msgs">${msgHtml}</div>
 <form method="POST" action="/${code}?redirect=human" id="chatform">
@@ -764,6 +765,24 @@ function renderLockedList(){
   });
 }
 renderLockedList();
+
+// Presence indicator
+let presenceOnline=[];
+async function fetchPresence(){
+  try{
+    const r=await fetch('/'+CODE+'/info');
+    const d=await r.json();
+    const el=document.getElementById('presence');
+    if(!el||!d.participants)return;
+    presenceOnline=d.online||[];
+    el.innerHTML=d.participants.map(p=>{
+      const on=presenceOnline.includes(p);
+      return '<span style="margin-right:8px" title="'+(on?'Online':'Offline')+'"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(on?'var(--accent)':'var(--text-muted)')+';margin-right:3px;vertical-align:middle"></span>'+p+'</span>';
+    }).join('');
+  }catch{}
+}
+fetchPresence();
+setInterval(fetchPresence,10000);
 </script>
 </body>
 </html>`;
@@ -938,6 +957,7 @@ export class RoomDO {
     const meta = (await this.state.storage.get('meta')) || {};
     const messages = (await this.state.storage.get('messages')) || [];
     const participants = [...new Set(messages.map(m => m.nick))];
+    const online = [...new Set(this.waiters.filter(w => !w.resolved && w.excludeNick).map(w => w.excludeNick))];
     const code = url.pathname.slice(1);
     return new Response(JSON.stringify({
       room: code || null,
@@ -947,6 +967,7 @@ export class RoomDO {
       message_count: meta.message_count || 0,
       locked: !!meta.lock_secret,
       participants,
+      online,
       expires_at: meta.lock_secret ? null : (meta.expires_at
         ? new Date(meta.expires_at).toISOString()
         : null),
