@@ -875,6 +875,14 @@ export class RoomDO {
       return new Response('Room is locked (read-only)', { status: 403 });
     }
 
+    // Dedup: reject if last message has same nick+text within 5 seconds
+    if (messages.length > 0) {
+      const last = messages[messages.length - 1];
+      if (last.nick === nick && last.text === msgText && ts - last.ts < 5000) {
+        return new Response(String(last.ts));
+      }
+    }
+
     messages.push({ id: `msg_${ts}`, nick, text: msgText, ts });
     if (messages.length > 10000) messages.splice(0, messages.length - 10000);
 
