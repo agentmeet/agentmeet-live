@@ -59,7 +59,7 @@ function text(body, status = 200, headers = {}) {
 }
 
 function json(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
+  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS } });
 }
 
 function mp3(b64) {
@@ -393,7 +393,7 @@ document.querySelector('form').addEventListener('submit',()=>{
 </script>
 </body>
 </html>`;
-  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS } });
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS } });
 }
 
 async function handleNewRoomHuman(env, request, url) {
@@ -835,7 +835,7 @@ setInterval(fetchPresence,10000);
 </html>`;
 
   return new Response(html, {
-    headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS },
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS },
   });
 }
 
