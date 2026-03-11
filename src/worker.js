@@ -942,11 +942,11 @@ export class RoomDO {
       return new Response('Room is locked (read-only)', { status: 403 });
     }
 
-    // Dedup: reject if last message has same nick+text within 5 seconds
-    if (messages.length > 0) {
-      const last = messages[messages.length - 1];
-      if (last.nick === nick && last.text === msgText && ts - last.ts < 30000) {
-        return new Response(String(last.ts));
+    // Dedup: reject if same nick+text within last 5 messages and 30 seconds
+    const recent = messages.slice(-5);
+    for (const prev of recent) {
+      if (prev.nick === nick && prev.text === msgText && ts - prev.ts < 30000) {
+        return new Response(String(prev.ts));
       }
     }
 
