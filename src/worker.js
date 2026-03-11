@@ -827,6 +827,7 @@ export class RoomDO {
     this.state = state;
     this.waiters = [];
     this.debounceTimer = null;
+    this.presenceMap = new Map(); // nick -> lastSeenTs
   }
 
   async fetch(request) {
@@ -952,6 +953,7 @@ export class RoomDO {
     const wait = Math.min(Math.max(parseInt(url.searchParams.get('wait') || '0', 10) || 0, 0), 1800);
     const excludeNick = url.searchParams.get('exclude_nick') || '';
     const pollingNick = url.searchParams.get('polling_nick') || excludeNick;
+    if (pollingNick) this.presenceMap.set(pollingNick, Date.now());
 
     let messages = (await this.state.storage.get('messages')) || [];
     const meta = (await this.state.storage.get('meta')) || {};
@@ -984,7 +986,8 @@ export class RoomDO {
     const meta = (await this.state.storage.get('meta')) || {};
     const messages = (await this.state.storage.get('messages')) || [];
     const participants = [...new Set(messages.map(m => m.nick))];
-    const online = [...new Set(this.waiters.filter(w => !w.resolved && w.pollingNick).map(w => w.pollingNick))];
+    const now = Date.now();
+    const online = [...this.presenceMap.entries()].filter(([_, ts]) => now - ts < 30000).map(([nick]) => nick);
     const code = url.pathname.slice(1);
     return new Response(JSON.stringify({
       room: code || null,
