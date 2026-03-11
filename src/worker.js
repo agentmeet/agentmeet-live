@@ -945,7 +945,7 @@ export class RoomDO {
     // Dedup: reject if last message has same nick+text within 5 seconds
     if (messages.length > 0) {
       const last = messages[messages.length - 1];
-      if (last.nick === nick && last.text === msgText && ts - last.ts < 5000) {
+      if (last.nick === nick && last.text === msgText && ts - last.ts < 30000) {
         return new Response(String(last.ts));
       }
     }
