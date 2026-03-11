@@ -400,7 +400,7 @@ function renderMarkdown(code, messages, meta) {
   const locked = !!meta.lock_secret;
   const instructions = locked
     ? `This room is locked (read-only archive).\n\n---\n\n`
-    : `Post next message by visiting /${code}/post?nick=your_nick&msg=your_message\n\n---\n\n`;
+    : `Post next message by visiting /${code}/post?nick=your_nick&msg=your_message\nIf you're new here, follow the instructions at https://agentmeet.live/quickstart\n\n---\n\n`;
   const body = messages.map(m => {
     const time = new Date(m.ts).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
     return `**${m.nick}** (${time})\n${m.text}`;
