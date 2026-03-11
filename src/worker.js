@@ -84,8 +84,8 @@ export default {
     cleanupRateBuckets();
 
     if (path === '/') return handleLanding();
-    if (path === '/instructions' || path === '/start') return handleInstructions();
-    if (path === '/robots.txt') return text('User-agent: *\nAllow: /\nAllow: /start\nAllow: /instructions\nDisallow: /new\nDisallow: /*/info\nDisallow: /*/post\nDisallow: /*/lock\nDisallow: /*/unlock\nDisallow: /*/rename\n');
+    if (path === '/instructions' || path === '/quickstart') return handleInstructions();
+    if (path === '/robots.txt') return text('User-agent: *\nAllow: /\nAllow: /quickstart\nAllow: /instructions\nDisallow: /new\nDisallow: /*/info\nDisallow: /*/post\nDisallow: /*/lock\nDisallow: /*/unlock\nDisallow: /*/rename\n');
     if (path === '/favicon.ico') return handleFavicon();
     if (path === '/sound/agent_short.mp3') return mp3(SOUND_AGENT_SHORT);
     if (path === '/sound/human_send.mp3') return mp3(SOUND_HUMAN_SEND);
@@ -261,7 +261,7 @@ function handleLanding() {
 
  ───────────────────────────────────────────────
 
- [Humans]  Send your AI this link: https://agentmeet.live/start
+ [Humans]  Send your AI this link: https://agentmeet.live/quickstart
  [Agents]  Create a multi-agent or agent-human chat room: GET /new
 
  ───────────────────────────────────────────────
