@@ -475,11 +475,16 @@ function handleHumanView(code, messages, meta, url) {
   .msg-text{color:var(--text)!important}
   #theme-toggle{cursor:pointer;opacity:0.5;vertical-align:middle}
   .footer-row{display:flex;justify-content:space-between;align-items:center}
+  #info-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;justify-content:center;align-items:center}
+  #info-overlay.show{display:flex}
+  #info-panel{background:var(--bg-body);border:1px solid var(--border);border-radius:8px;padding:24px;max-width:480px;width:90%;max-height:80vh;overflow-y:auto;font-family:'Source Code Pro',monospace;font-size:13px;color:var(--text);position:relative}
+  #info-panel pre{white-space:pre-wrap;word-break:break-word;margin:0}
+  #info-close{position:absolute;top:8px;right:12px;cursor:pointer;font-size:20px;color:var(--text-muted)}
 </style>
 </head>
 <body>
 <div style="display:flex;justify-content:space-between;align-items:baseline;padding-top:24px">
-  <h1><span id="room-title" style="cursor:pointer">${escapeHtml(title)}</span><span class="header-icons"><span id="copy-code" title="Copy room URL"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><span id="edit-title" title="Rename room"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></span><span id="sound-toggle" title="Toggle sound"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></span></span></h1>
+  <h1><span id="room-title" style="cursor:pointer">${escapeHtml(title)}</span><span class="header-icons"><span id="copy-code" title="Copy room URL"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><span id="edit-title" title="Rename room"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></span><span id="sound-toggle" title="Toggle sound"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></span><span id="info-toggle" title="Room info"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></span></h1>
   <div style="display:flex;align-items:center;gap:0.5em">
     <span id="lock-status" style="font-family:'Source Code Pro',monospace;font-size:12px;color:var(--text-lock)">${locked ? 'Locked, never expires' : `Expires in ${meta.ttl_hours || 24}h`}</span>
     <label class="toggle"><input type="checkbox" id="lock-toggle"><span class="slider"></span></label>
@@ -506,6 +511,7 @@ function handleHumanView(code, messages, meta, url) {
   </div><span id="theme-toggle" title="Toggle light/dark mode"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span></div>
   <div id="locked-list" class="locked-list" style="padding:0.5em 0"></div>
 </footer>
+<div id="info-overlay"><div id="info-panel"><span id="info-close">&times;</span><pre id="info-content">Loading...</pre></div></div>
 <script>
 const CODE='${code}';
 let roomLocked=${locked};
@@ -765,6 +771,25 @@ function renderLockedList(){
   });
 }
 renderLockedList();
+
+// Info overlay
+const infoToggle=document.getElementById('info-toggle');
+const infoOverlay=document.getElementById('info-overlay');
+const infoContent=document.getElementById('info-content');
+const infoClose=document.getElementById('info-close');
+if(infoToggle){
+  infoToggle.addEventListener('click',async()=>{
+    infoOverlay.classList.add('show');
+    infoContent.textContent='Loading...';
+    try{
+      const r=await fetch('/'+CODE+'/info');
+      const d=await r.json();
+      infoContent.textContent=JSON.stringify(d,null,2);
+    }catch(e){infoContent.textContent='Failed to load info';}
+  });
+}
+if(infoClose)infoClose.addEventListener('click',()=>infoOverlay.classList.remove('show'));
+if(infoOverlay)infoOverlay.addEventListener('click',(e)=>{if(e.target===infoOverlay)infoOverlay.classList.remove('show');});
 
 // Presence indicator
 let presenceOnline=[];
