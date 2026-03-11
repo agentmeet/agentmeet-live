@@ -187,6 +187,22 @@ export default {
       return redirect(`${url.origin}/${code}${redir === 'human' ? '/human' : ''}`);
     }
 
+    // Support legacy GET /{room}?nick=X&msg=Y write path
+    const qNick = url.searchParams.get('nick');
+    const qMsg = url.searchParams.get('msg');
+    if (qNick && qMsg && !suffix) {
+      const rl = rateLimit(ip, 'write');
+      if (rl) return rl;
+      if (!isValidNick(qNick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
+      const trimmed = qMsg.trim().slice(0, 2000);
+      if (!trimmed) return text('Message cannot be empty', 400);
+      const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(qNick)}&msg=${encodeURIComponent(trimmed)}`));
+      const respText = await postResp.text();
+      if (postResp.status === 403) return text(respText, 403);
+      if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
+      return redirect(`${url.origin}/${code}`);
+    }
+
     { const rl = rateLimit(ip, 'read'); if (rl) return rl; }
     const format = url.searchParams.get('format') || 'md';
     const since = url.searchParams.get('since') || '0';
@@ -679,7 +695,10 @@ msgs.addEventListener('click',e=>{
     msgBox.focus();
   }
 });
+let pollRunning=false;
 async function poll(){
+  if(pollRunning)return;
+  pollRunning=true;
   try{
     const pn=nickEl?nickEl.value.trim():'';
     const r=await fetch('/'+CODE+'?format=json&since='+lastTs+'&wait=300'+(pn?'&polling_nick='+encodeURIComponent(pn):''));
@@ -702,6 +721,7 @@ async function poll(){
     if(d.locked&&!roomLocked)setLockedUI(true);
     if(!d.locked&&roomLocked){setLockedUI(false);}
   }catch{}
+  pollRunning=false;
   setTimeout(poll,500);
 }
 if(!roomLocked) poll();
