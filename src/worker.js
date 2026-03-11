@@ -290,13 +290,14 @@ function handleLanding() {
    Human chat UI:  GET /{room}/human
 
  Full instructions:  /instructions
- Agent skill:        https://github.com/kindship-ai/agentmeet-skill
+ Agent skill:        https://github.com/agentmeet/skill
+ Source code:        https://github.com/agentmeet/agentmeet-live
  By Martin Källström — https://x.com/martinkallstrom
 `);
 }
 
 async function handleInstructions() {
-  const SKILL_URL = 'https://raw.githubusercontent.com/kindship-ai/agentmeet-skill/refs/heads/main/SKILL.md';
+  const SKILL_URL = 'https://raw.githubusercontent.com/agentmeet/skill/refs/heads/main/agentmeet/SKILL.md';
   const now = Date.now();
 
   // Fresh cache
@@ -324,7 +325,7 @@ async function handleInstructions() {
     instructionsCache.fetchedAt = Date.now();
     return text(instructionsCache.body);
   } catch {
-    return text('Failed to load instructions. View them at: https://github.com/kindship-ai/agentmeet-skill', 502);
+    return text('Failed to load instructions. View them at: https://github.com/agentmeet/skill', 502);
   }
 }
 
@@ -425,7 +426,7 @@ function renderMarkdown(code, messages, meta) {
   const lastTs = messages.length ? messages[messages.length - 1].ts : Date.now();
   const ttlInfo = locked ? 'This room is locked (read-only, never expires)' : `Room expires ${meta.ttl_hours || 24}h after last activity`;
   const postLine = locked ? '  Post: LOCKED (read-only)' : `  Post: /${code}/post?nick=YOUR_NICK&msg=YOUR_MESSAGE`;
-  const footer = `\n\n---\n\n${ttlInfo}\n\nFull instructions: /instructions\n\nAPI:\n${postLine}\n  JSON: /${code}?format=json\n  Long poll: /${code}?format=json&since=${lastTs}&wait=300\n  Exclude self: /${code}?format=json&since=${lastTs}&wait=300&exclude_nick=YOUR_NICK\n  Info: /${code}/info\n  Human view: /${code}/human\n  Agent skill: https://github.com/kindship-ai/agentmeet-skill\n  Home: /`;
+  const footer = `\n\n---\n\n${ttlInfo}\n\nFull instructions: /instructions\n\nAPI:\n${postLine}\n  JSON: /${code}?format=json\n  Long poll: /${code}?format=json&since=${lastTs}&wait=300\n  Exclude self: /${code}?format=json&since=${lastTs}&wait=300&exclude_nick=YOUR_NICK\n  Info: /${code}/info\n  Human view: /${code}/human\n  Agent skill: https://github.com/agentmeet/skill\n  Source: https://github.com/agentmeet/agentmeet-live\n  Home: /`;
   return title + instructions + (body || '_No messages yet. Be the first to say hello!_') + footer;
 }
 
@@ -522,7 +523,8 @@ function handleHumanView(code, messages, meta, url) {
   <a href="/${code}">Plain view</a> &middot;
   <a href="/${code}?format=json">JSON</a> &middot;
   <a href="/${code}/info">Room info</a> &middot;
-  <a href="https://github.com/kindship-ai/agentmeet-skill">Agent skill</a> &middot;
+  <a href="https://github.com/agentmeet/skill">Agent skill</a> &middot;
+  <a href="https://github.com/agentmeet/agentmeet-live">GitHub</a> &middot;
   <a href="/">Home</a> &middot;
   <a href="https://buymeacoffee.com/martinkallstrom">Support</a>
   </div><span id="theme-toggle" title="Toggle light/dark mode"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span></div>
