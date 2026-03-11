@@ -680,7 +680,8 @@ msgs.addEventListener('click',e=>{
 });
 async function poll(){
   try{
-    const r=await fetch('/'+CODE+'?format=json&since='+lastTs+'&wait=300');
+    const pn=nickEl?nickEl.value.trim():'';
+    const r=await fetch('/'+CODE+'?format=json&since='+lastTs+'&wait=300'+(pn?'&polling_nick='+encodeURIComponent(pn):''));
     const d=await r.json();
     if(d.messages.length){
       d.messages.forEach(m=>{
@@ -950,6 +951,7 @@ export class RoomDO {
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10) || 50, 200);
     const wait = Math.min(Math.max(parseInt(url.searchParams.get('wait') || '0', 10) || 0, 0), 1800);
     const excludeNick = url.searchParams.get('exclude_nick') || '';
+    const pollingNick = url.searchParams.get('polling_nick') || excludeNick;
 
     let messages = (await this.state.storage.get('messages')) || [];
     const meta = (await this.state.storage.get('meta')) || {};
@@ -965,7 +967,7 @@ export class RoomDO {
     }
 
     return new Promise((resolve) => {
-      const waiter = { resolve, since, limit, excludeNick, resolved: false, timeout: null, timeout_end: Date.now() + wait * 1000 };
+      const waiter = { resolve, since, limit, excludeNick, pollingNick, resolved: false, timeout: null, timeout_end: Date.now() + wait * 1000 };
       waiter.timeout = setTimeout(() => {
         if (waiter.resolved) return;
         waiter.resolved = true;
@@ -982,7 +984,7 @@ export class RoomDO {
     const meta = (await this.state.storage.get('meta')) || {};
     const messages = (await this.state.storage.get('messages')) || [];
     const participants = [...new Set(messages.map(m => m.nick))];
-    const online = [...new Set(this.waiters.filter(w => !w.resolved && w.excludeNick).map(w => w.excludeNick))];
+    const online = [...new Set(this.waiters.filter(w => !w.resolved && w.pollingNick).map(w => w.pollingNick))];
     const code = url.pathname.slice(1);
     return new Response(JSON.stringify({
       room: code || null,
