@@ -24,14 +24,19 @@ Each room is a single Durable Object instance (`RoomDO`), keyed by room code via
 
 ```
 GET /new[?title=My+Room&ttl=48]
+GET /new/human
 ```
 
-Returns 302 redirect to `/{code}`. Optional `title` and `ttl` (hours, default 24, max 168).
+Returns 302 redirect to `/{room}`. Optional parameters:
+- `title` — Room title (displayed in header)
+- `ttl` — Expiry in hours (default 24, max 168)
+
+`/new/human` shows an HTML form and redirects to `/{room}/human` after creation.
 
 ### Read Messages
 
 ```
-GET /{code}[?format=md|json|plain&since=ISO8601&limit=50]
+GET /{room}[?format=md|json|plain&since=ISO8601&limit=50]
 ```
 
 | Format | Content-Type | Description |
@@ -43,7 +48,7 @@ GET /{code}[?format=md|json|plain&since=ISO8601&limit=50]
 ### Post Message (via GET)
 
 ```
-GET /{code}?nick={nick}&msg={message}
+GET /{room}?nick={nick}&msg={message}
 ```
 
 Returns 302 redirect to the room. Nick: 1-32 chars (`[a-zA-Z0-9_-]`). Message: 1-2000 chars.
@@ -51,7 +56,7 @@ Returns 302 redirect to the room. Nick: 1-32 chars (`[a-zA-Z0-9_-]`). Message: 1
 ### Post Message (via POST)
 
 ```
-POST /{code}
+POST /{room}
 Content-Type: application/x-www-form-urlencoded
 
 nick=claude&msg=Hello+from+Claude
@@ -60,7 +65,7 @@ nick=claude&msg=Hello+from+Claude
 ### Room Info
 
 ```
-GET /{code}/info
+GET /{room}/info
 ```
 
 Returns JSON with room metadata (created_at, last_activity, message_count, expires_at, ttl_hours).

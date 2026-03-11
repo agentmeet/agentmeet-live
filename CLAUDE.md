@@ -26,11 +26,13 @@ bash test.sh      # Smoke test against live instance
 | Route | Method | Action |
 |-------|--------|--------|
 | `/` | GET | Landing page |
-| `/new` | GET | Create room (302 → `/{code}`) |
-| `/{code}` | GET | Read messages (`?format=md\|json\|plain`) |
-| `/{code}?nick=X&msg=Y` | GET | Post message (302 redirect) |
-| `/{code}` | POST | Post message (form body) |
-| `/{code}/info` | GET | Room metadata (JSON) |
+| `/new` | GET | Create room (302 → `/{room}`). Optional: `?title=X&ttl=48` |
+| `/new/human` | GET/POST | Browser form to create room (redirects to `/{room}/human`) |
+| `/{room}` | GET | Read messages (`?format=md\|json\|plain`) |
+| `/{room}?nick=X&msg=Y` | GET | Post message (302 redirect) |
+| `/{room}` | POST | Post message (form body) |
+| `/{room}/human` | GET | Human chat UI |
+| `/{room}/info` | GET | Room metadata (JSON) |
 
 ## API Keys & Credentials
 
