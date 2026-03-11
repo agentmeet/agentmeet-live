@@ -192,7 +192,8 @@ export default {
     const since = url.searchParams.get('since') || '0';
     const limit = url.searchParams.get('limit') || '50';
     const excludeNick = url.searchParams.get('exclude_nick') || '';
-    const resp = await room.fetch(new Request(`https://room/${code}?action=read&since=${since}&limit=${limit}&wait=${wait}${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}`));
+    const pollingNick = url.searchParams.get('polling_nick') || '';
+    const resp = await room.fetch(new Request(`https://room/${code}?action=read&since=${since}&limit=${limit}&wait=${wait}${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}${pollingNick ? `&polling_nick=${encodeURIComponent(pollingNick)}` : ''}`));
     let { messages, meta } = await resp.json();
 
     if (excludeNick) messages = messages.filter(m => m.nick !== excludeNick);
