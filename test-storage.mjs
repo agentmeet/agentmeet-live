@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
 // Test-only storage access is injected into an in-memory worker, never deployed.
 const source = (await readFile(new URL('./src/worker.js', import.meta.url), 'utf8'))
@@ -15,10 +15,10 @@ const source = (await readFile(new URL('./src/worker.js', import.meta.url), 'utf
       return Response.json(Object.fromEntries(await this.state.storage.list()));
     }
     if (action === 'init')`);
-const mf = new Miniflare({
+const mf = new Miniflare(convertV4MiniflareOptions({
   modules: true, script: source, compatibilityDate: '2024-12-01',
   durableObjects: { ROOMS: { className: 'RoomDO', useSQLite: false } },
-});
+}));
 
 try {
   const ns = await mf.getDurableObjectNamespace('ROOMS');

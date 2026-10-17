@@ -14,6 +14,64 @@ const rateBuckets = new Map();
 let lastCleanup = Date.now();
 const instructionsCache = { body: null, fetchedAt: 0, revalidating: false };
 
+// Log only explicit diagnostic fields. Room codes are capabilities, and GET
+// query strings contain messages and lock secrets, so never log request URLs,
+// bodies, IPs, nicknames, titles, or raw exception messages/stacks.
+function logEvent(level, event, fields = {}) {
+  console[level]({ event, timestamp: new Date().toISOString(), ...fields });
+}
+
+function errorDetails(error) {
+  const message = typeof error?.message === 'string' ? error.message : '';
+  const names = ['Error', 'TypeError', 'RangeError', 'URIError', 'SyntaxError', 'AbortError'];
+  const error_type = names.includes(error?.name) ? error.name : 'Error';
+  let error_code = 'unexpected_error';
+  if (/values cannot be larger|value.*(?:size|limit)|131072/i.test(message)) error_code = 'storage_value_limit';
+  else if (error_type === 'URIError') error_code = 'invalid_unicode';
+  else if (/storage|transaction|database/i.test(message)) error_code = 'storage_failure';
+  else if (error_type === 'AbortError') error_code = 'request_aborted';
+  else if (message === 'Room service failed') error_code = 'room_service_failure';
+  // Retain source coordinates only; arbitrary exception text may contain input.
+  const error_frames = typeof error?.stack === 'string' ? error.stack.split('\n').slice(1)
+    .map(line => line.match(/\b(?:worker|index)\.js:\d+:\d+(?=\)?$)/)?.[0])
+    .filter(Boolean).slice(0, 5) : [];
+  return { error_type, error_code, error_frames };
+}
+
+function requestOperation(request) {
+  if (request.method === 'OPTIONS') return 'cors.preflight';
+  const url = new URL(request.url);
+  if (url.pathname === '/new' || (url.pathname === '/new/human' && request.method === 'POST')) return 'room.create';
+  if (url.pathname === '/instructions' || url.pathname === '/quickstart') return 'instructions.read';
+  const match = url.pathname.match(ROOM_RE);
+  if (!match) return 'public.read';
+  const suffix = match[2]?.slice(1);
+  if (suffix) return `room.${suffix}`;
+  if (request.method === 'POST' || (url.searchParams.has('nick') && url.searchParams.has('msg'))) return 'room.post';
+  return Number(url.searchParams.get('wait')) > 0 ? 'room.poll' : 'room.read';
+}
+
+function withRequestId(response, requestId) {
+  const headers = new Headers(response.headers);
+  headers.set('X-Request-ID', requestId);
+  headers.set('Access-Control-Expose-Headers', 'X-Request-ID');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function roomConnection(env, code, requestId) {
+  const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
+  return {
+    async fetch(request) {
+      const headers = new Headers(request.headers);
+      headers.set('X-Request-ID', requestId);
+      const response = await stub.fetch(new Request(request, { headers }));
+      // Do not turn an internal failure into a successful posting redirect.
+      if (response.status >= 500) throw new Error('Room service failed');
+      return response;
+    },
+  };
+}
+
 function rateLimit(ip, bucket) {
   const key = `${ip}:${bucket}`;
   const now = Date.now();
@@ -72,174 +130,197 @@ function redirect(url) {
 }
 
 export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS });
-    }
-
-    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-    cleanupRateBuckets();
-
-    if (path === '/') return handleLanding();
-    if (path === '/instructions' || path === '/quickstart') return handleInstructions();
-    if (path === '/robots.txt') return text('User-agent: *\nAllow: /\nAllow: /quickstart\nAllow: /instructions\nDisallow: /new\nDisallow: /*/info\nDisallow: /*/post\nDisallow: /*/lock\nDisallow: /*/unlock\nDisallow: /*/rename\n');
-    if (path === '/favicon.ico') return handleFavicon();
-    if (path === '/sound/agent_short.mp3') return mp3(SOUND_AGENT_SHORT);
-    if (path === '/sound/human_send.mp3') return mp3(SOUND_HUMAN_SEND);
-    if (path === '/new/human') {
-      if (request.method === 'POST') {
-        const rl = rateLimit(ip, 'create');
-        if (rl) return rl;
-        return handleNewRoomHuman(env, request, url);
+  async fetch(request, env, ctx) {
+    const requestId = crypto.randomUUID();
+    const operation = requestOperation(request);
+    const started = Date.now();
+    try {
+      const response = await handleRequest(request, env, ctx, requestId);
+      const fields = { request_id: requestId, operation, status: response.status, duration_ms: Date.now() - started };
+      if (response.status >= 400) {
+        logEvent(response.status >= 500 ? 'error' : 'warn', 'request.rejected', fields);
+      } else if (['room.create', 'room.post', 'room.lock', 'room.unlock', 'room.rename'].includes(operation)) {
+        logEvent('info', 'request.completed', fields);
+      } else if (operation !== 'room.poll' && fields.duration_ms >= 1000) {
+        logEvent('warn', 'request.slow', fields);
       }
-      return handleNewRoomHumanForm();
-    }
-    if (path === '/new') {
-      const rl = rateLimit(ip, 'create');
-      if (rl) return rl;
-      return handleNewRoom(env, url);
-    }
-
-    const match = path.match(ROOM_RE);
-    if (!match) return text('Not found', 404);
-
-    const code = match[1];
-    const suffix = match[2];
-    const id = env.ROOMS.idFromName(code);
-    const room = env.ROOMS.get(id);
-
-    if (suffix === '/info') {
-      const rl = rateLimit(ip, 'read');
-      if (rl) return rl;
-      return room.fetch(new Request(`https://room/${code}?action=info`));
-    }
-
-    if (suffix === '/lock') {
-      const rl = rateLimit(ip, 'write');
-      if (rl) return rl;
-      const secret = url.searchParams.get('secret');
-      if (!secret) return text('Missing secret', 400);
-      return room.fetch(new Request(`https://room/${code}?action=lock&secret=${encodeURIComponent(secret)}`));
-    }
-
-    if (suffix === '/unlock') {
-      const rl = rateLimit(ip, 'write');
-      if (rl) return rl;
-      const secret = url.searchParams.get('secret');
-      if (!secret) return text('Missing secret', 400);
-      return room.fetch(new Request(`https://room/${code}?action=unlock&secret=${encodeURIComponent(secret)}`));
-    }
-
-    if (suffix === '/rename') {
-      const rl = rateLimit(ip, 'write');
-      if (rl) return rl;
-      const title = url.searchParams.get('title');
-      if (!title) return text('Missing title', 400);
-      return room.fetch(new Request(`https://room/${code}?action=rename&title=${encodeURIComponent(title)}`));
-    }
-
-    if (suffix === '/human') {
-      const rl = rateLimit(ip, 'read');
-      if (rl) return rl;
-      const resp = await room.fetch(new Request(`https://room/${code}?action=read&since=0&limit=200`));
-      const { messages, meta } = await resp.json();
-      return handleHumanView(code, messages, meta, url);
-    }
-
-    const wait = Math.min(Math.max(parseInt(url.searchParams.get('wait') || '0', 10) || 0, 0), 1800);
-
-    // POST via /{room}/post (query params) or /{room} (form body)
-    if (suffix === '/post') {
-      const rl = rateLimit(ip, 'write');
-      if (rl) return rl;
-      const nick = url.searchParams.get('nick');
-      const msg = url.searchParams.get('msg');
-      if (!nick || !msg) return text('Missing nick or msg', 400);
-      if (!isValidNick(nick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
-      const trimmed = msg.trim().slice(0, 2000);
-      if (!trimmed) return text('Message cannot be empty', 400);
-      const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(trimmed)}`));
-      const respText = await postResp.text();
-      if (postResp.status === 403) return text(respText, 403);
-      if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
-      return redirect(`${url.origin}/${code}`);
-    }
-
-    if (request.method === 'POST') {
-      const rl = rateLimit(ip, 'write');
-      if (rl) return rl;
-      const form = await request.formData().catch(() => null);
-      if (!form) return text('Invalid form data', 400);
-      const nick = form.get('nick');
-      const msg = form.get('msg');
-      if (!nick || !msg) return text('Missing nick or msg', 400);
-      if (!isValidNick(nick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
-      const trimmed = String(msg).trim().slice(0, 2000);
-      if (!trimmed) return text('Message cannot be empty', 400);
-      const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(trimmed)}`));
-      const respText = await postResp.text();
-      if (postResp.status === 403) return text(respText, 403);
-      if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
-      const redir = url.searchParams.get('redirect');
-      return redirect(`${url.origin}/${code}${redir === 'human' ? '/human' : ''}`);
-    }
-
-    // Support legacy GET /{room}?nick=X&msg=Y write path
-    const qNick = url.searchParams.get('nick');
-    const qMsg = url.searchParams.get('msg');
-    if (qNick && qMsg && !suffix) {
-      const rl = rateLimit(ip, 'write');
-      if (rl) return rl;
-      if (!isValidNick(qNick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
-      const trimmed = qMsg.trim().slice(0, 2000);
-      if (!trimmed) return text('Message cannot be empty', 400);
-      const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(qNick)}&msg=${encodeURIComponent(trimmed)}`));
-      const respText = await postResp.text();
-      if (postResp.status === 403) return text(respText, 403);
-      if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
-      return redirect(`${url.origin}/${code}`);
-    }
-
-    { const rl = rateLimit(ip, 'read'); if (rl) return rl; }
-    const format = url.searchParams.get('format') || 'md';
-    const since = url.searchParams.get('since') || '0';
-    const limit = url.searchParams.get('limit') || '50';
-    const excludeNick = url.searchParams.get('exclude_nick') || '';
-    const pollingNick = url.searchParams.get('polling_nick') || '';
-    const resp = await room.fetch(new Request(`https://room/${code}?action=read&since=${since}&limit=${limit}&wait=${wait}${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}${pollingNick ? `&polling_nick=${encodeURIComponent(pollingNick)}` : ''}`));
-    let { messages, meta } = await resp.json();
-
-    if (excludeNick) messages = messages.filter(m => m.nick !== excludeNick);
-
-    if (format === 'json') {
-      const lastTs = messages.length ? messages[messages.length - 1].ts : since;
-      const nextParams = `format=json&since=${lastTs}&wait=300${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}`;
-      return json({
-        room: code,
-        messages,
-        message_count: meta.message_count || 0,
-        created_at: meta.created_at || null,
-        locked: !!meta.lock_secret,
-        next: `/${code}?${nextParams}`,
-        post: `/${code}/post`,
+      return withRequestId(response, requestId);
+    } catch (error) {
+      logEvent('error', 'request.failed', {
+        request_id: requestId, operation, status: 500,
+        duration_ms: Date.now() - started, ...errorDetails(error),
       });
+      return withRequestId(text(`Internal server error. Reference: ${requestId}`, 500, { 'Cache-Control': 'no-store' }), requestId);
     }
-
-    if (format === 'plain') {
-      if (!messages.length) return text('No messages yet.');
-      const lines = messages.map(m => {
-        const t = new Date(m.ts).toISOString().slice(11, 19);
-        return `[${t}] ${m.nick}: ${m.text}`;
-      });
-      return text(lines.join('\n'));
-    }
-
-    return text(renderMarkdown(code, messages, meta));
   },
 };
+
+async function handleRequest(request, env, ctx, requestId) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS });
+  }
+
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  cleanupRateBuckets();
+
+  if (path === '/') return handleLanding();
+  if (path === '/instructions' || path === '/quickstart') return handleInstructions(ctx, requestId);
+  if (path === '/robots.txt') return text('User-agent: *\nAllow: /\nAllow: /quickstart\nAllow: /instructions\nDisallow: /new\nDisallow: /*/info\nDisallow: /*/post\nDisallow: /*/lock\nDisallow: /*/unlock\nDisallow: /*/rename\n');
+  if (path === '/favicon.ico') return handleFavicon();
+  if (path === '/sound/agent_short.mp3') return mp3(SOUND_AGENT_SHORT);
+  if (path === '/sound/human_send.mp3') return mp3(SOUND_HUMAN_SEND);
+  if (path === '/new/human') {
+    if (request.method === 'POST') {
+      const rl = rateLimit(ip, 'create');
+      if (rl) return rl;
+      return handleNewRoomHuman(env, request, url, requestId);
+    }
+    return handleNewRoomHumanForm();
+  }
+  if (path === '/new') {
+    const rl = rateLimit(ip, 'create');
+    if (rl) return rl;
+    return handleNewRoom(env, url, requestId);
+  }
+
+  const match = path.match(ROOM_RE);
+  if (!match) return text('Not found', 404);
+
+  const code = match[1];
+  const suffix = match[2];
+  const room = roomConnection(env, code, requestId);
+
+  if (suffix === '/info') {
+    const rl = rateLimit(ip, 'read');
+    if (rl) return rl;
+    return room.fetch(new Request(`https://room/${code}?action=info`));
+  }
+
+  if (suffix === '/lock') {
+    const rl = rateLimit(ip, 'write');
+    if (rl) return rl;
+    const secret = url.searchParams.get('secret');
+    if (!secret) return text('Missing secret', 400);
+    return room.fetch(new Request(`https://room/${code}?action=lock&secret=${encodeURIComponent(secret)}`));
+  }
+
+  if (suffix === '/unlock') {
+    const rl = rateLimit(ip, 'write');
+    if (rl) return rl;
+    const secret = url.searchParams.get('secret');
+    if (!secret) return text('Missing secret', 400);
+    return room.fetch(new Request(`https://room/${code}?action=unlock&secret=${encodeURIComponent(secret)}`));
+  }
+
+  if (suffix === '/rename') {
+    const rl = rateLimit(ip, 'write');
+    if (rl) return rl;
+    const title = url.searchParams.get('title');
+    if (!title) return text('Missing title', 400);
+    return room.fetch(new Request(`https://room/${code}?action=rename&title=${encodeURIComponent(title)}`));
+  }
+
+  if (suffix === '/human') {
+    const rl = rateLimit(ip, 'read');
+    if (rl) return rl;
+    const resp = await room.fetch(new Request(`https://room/${code}?action=read&since=0&limit=200`));
+    const { messages, meta } = await resp.json();
+    return handleHumanView(code, messages, meta, url);
+  }
+
+  const wait = Math.min(Math.max(parseInt(url.searchParams.get('wait') || '0', 10) || 0, 0), 1800);
+
+  // POST via /{room}/post (query params) or /{room} (form body)
+  if (suffix === '/post') {
+    const rl = rateLimit(ip, 'write');
+    if (rl) return rl;
+    const nick = url.searchParams.get('nick');
+    const msg = url.searchParams.get('msg');
+    if (!nick || !msg) return text('Missing nick or msg', 400);
+    if (!isValidNick(nick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
+    const trimmed = msg.trim().slice(0, 2000);
+    if (!trimmed) return text('Message cannot be empty', 400);
+    const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(trimmed)}`));
+    const respText = await postResp.text();
+    if (postResp.status === 403) return text(respText, 403);
+    if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
+    return redirect(`${url.origin}/${code}`);
+  }
+
+  if (request.method === 'POST') {
+    const rl = rateLimit(ip, 'write');
+    if (rl) return rl;
+    const form = await request.formData().catch(() => null);
+    if (!form) return text('Invalid form data', 400);
+    const nick = form.get('nick');
+    const msg = form.get('msg');
+    if (!nick || !msg) return text('Missing nick or msg', 400);
+    if (!isValidNick(nick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
+    const trimmed = String(msg).trim().slice(0, 2000);
+    if (!trimmed) return text('Message cannot be empty', 400);
+    const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(trimmed)}`));
+    const respText = await postResp.text();
+    if (postResp.status === 403) return text(respText, 403);
+    if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
+    const redir = url.searchParams.get('redirect');
+    return redirect(`${url.origin}/${code}${redir === 'human' ? '/human' : ''}`);
+  }
+
+  // Support legacy GET /{room}?nick=X&msg=Y write path
+  const qNick = url.searchParams.get('nick');
+  const qMsg = url.searchParams.get('msg');
+  if (qNick && qMsg && !suffix) {
+    const rl = rateLimit(ip, 'write');
+    if (rl) return rl;
+    if (!isValidNick(qNick)) return text('Invalid nick. Use 1-32 chars: a-z, 0-9, _, -', 400);
+    const trimmed = qMsg.trim().slice(0, 2000);
+    if (!trimmed) return text('Message cannot be empty', 400);
+    const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(qNick)}&msg=${encodeURIComponent(trimmed)}`));
+    const respText = await postResp.text();
+    if (postResp.status === 403) return text(respText, 403);
+    if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
+    return redirect(`${url.origin}/${code}`);
+  }
+
+  { const rl = rateLimit(ip, 'read'); if (rl) return rl; }
+  const format = url.searchParams.get('format') || 'md';
+  const since = url.searchParams.get('since') || '0';
+  const limit = url.searchParams.get('limit') || '50';
+  const excludeNick = url.searchParams.get('exclude_nick') || '';
+  const pollingNick = url.searchParams.get('polling_nick') || '';
+  const resp = await room.fetch(new Request(`https://room/${code}?action=read&since=${since}&limit=${limit}&wait=${wait}${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}${pollingNick ? `&polling_nick=${encodeURIComponent(pollingNick)}` : ''}`));
+  let { messages, meta } = await resp.json();
+
+  if (excludeNick) messages = messages.filter(m => m.nick !== excludeNick);
+
+  if (format === 'json') {
+    const lastTs = messages.length ? messages[messages.length - 1].ts : since;
+    const nextParams = `format=json&since=${lastTs}&wait=300${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}`;
+    return json({
+      room: code,
+      messages,
+      message_count: meta.message_count || 0,
+      created_at: meta.created_at || null,
+      locked: !!meta.lock_secret,
+      next: `/${code}?${nextParams}`,
+      post: `/${code}/post`,
+    });
+  }
+
+  if (format === 'plain') {
+    if (!messages.length) return text('No messages yet.');
+    const lines = messages.map(m => {
+      const t = new Date(m.ts).toISOString().slice(11, 19);
+      return `[${t}] ${m.nick}: ${m.text}`;
+    });
+    return text(lines.join('\n'));
+  }
+
+  return text(renderMarkdown(code, messages, meta));
+}
 
 function buildWaitRedirect(url, code, ts, wait) {
   const params = new URLSearchParams();
@@ -296,7 +377,7 @@ function handleLanding() {
 `);
 }
 
-async function handleInstructions() {
+async function handleInstructions(ctx, requestId) {
   const SKILL_URL = 'https://raw.githubusercontent.com/agentmeet/skill/refs/heads/main/agentmeet/SKILL.md';
   const now = Date.now();
 
@@ -309,10 +390,20 @@ async function handleInstructions() {
   if (instructionsCache.body) {
     if (!instructionsCache.revalidating) {
       instructionsCache.revalidating = true;
-      fetch(SKILL_URL).then(r => r.ok ? r.text() : Promise.reject()).then(body => {
+      const refresh = fetch(SKILL_URL).then(r => {
+        if (!r.ok) {
+          logEvent('warn', 'instructions.refresh_failed', { request_id: requestId, upstream_status: r.status });
+          return null;
+        }
+        return r.text();
+      }).then(body => {
+        if (body === null) return;
         instructionsCache.body = body;
         instructionsCache.fetchedAt = Date.now();
-      }).catch(() => {}).finally(() => { instructionsCache.revalidating = false; });
+      }).catch(error => {
+        logEvent('warn', 'instructions.refresh_failed', { request_id: requestId, ...errorDetails(error) });
+      }).finally(() => { instructionsCache.revalidating = false; });
+      ctx.waitUntil(refresh);
     }
     return text(instructionsCache.body);
   }
@@ -320,21 +411,24 @@ async function handleInstructions() {
   // No cache — fetch synchronously
   try {
     const resp = await fetch(SKILL_URL);
-    if (!resp.ok) throw new Error(resp.status);
+    if (!resp.ok) {
+      logEvent('error', 'instructions.fetch_failed', { request_id: requestId, upstream_status: resp.status });
+      return text('Failed to load instructions. View them at: https://github.com/agentmeet/skill', 502);
+    }
     instructionsCache.body = await resp.text();
     instructionsCache.fetchedAt = Date.now();
     return text(instructionsCache.body);
-  } catch {
+  } catch (error) {
+    logEvent('error', 'instructions.fetch_failed', { request_id: requestId, ...errorDetails(error) });
     return text('Failed to load instructions. View them at: https://github.com/agentmeet/skill', 502);
   }
 }
 
-async function handleNewRoom(env, url) {
+async function handleNewRoom(env, url, requestId) {
   const code = generateRoomCode();
   const title = url.searchParams.get('title') || null;
   const ttl = Math.min(Math.max(parseInt(url.searchParams.get('ttl') || '24', 10) || 24, 1), 168);
-  const id = env.ROOMS.idFromName(code);
-  const room = env.ROOMS.get(id);
+  const room = roomConnection(env, code, requestId);
   await room.fetch(new Request(`https://room/${code}?action=init&ttl=${ttl}${title ? `&title=${encodeURIComponent(title)}` : ''}`));
   return redirect(`${url.origin}/${code}`);
 }
@@ -397,15 +491,14 @@ document.querySelector('form').addEventListener('submit',()=>{
   return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS } });
 }
 
-async function handleNewRoomHuman(env, request, url) {
+async function handleNewRoomHuman(env, request, url, requestId) {
   const form = await request.formData().catch(() => null);
   if (!form) return redirect(`${url.origin}/new/human`);
   const title = form.get('title') || null;
   const nick = form.get('nick') || '';
   const ttl = Math.min(Math.max(parseInt(form.get('ttl') || '24', 10) || 24, 1), 168);
   const code = generateRoomCode();
-  const id = env.ROOMS.idFromName(code);
-  const room = env.ROOMS.get(id);
+  const room = roomConnection(env, code, requestId);
   await room.fetch(new Request(`https://room/${code}?action=init&ttl=${ttl}${title ? `&title=${encodeURIComponent(title)}` : ''}`));
   if (nick && isValidNick(nick)) {
     await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(nick + ' created this room')}`));
@@ -534,6 +627,9 @@ function handleHumanView(code, messages, meta, url) {
 <script>
 const CODE='${code}';
 let roomLocked=${locked};
+function logClientFailure(event,response){
+  console.warn({event,status:response?response.status:0,request_id:response?response.headers.get('X-Request-ID'):null});
+}
 const sndSend=new Audio('/sound/human_send.mp3');
 const sndShort=new Audio('/sound/agent_short.mp3');
 function playSound(a){a.currentTime=0;a.play().catch(()=>{});}
@@ -596,10 +692,15 @@ function saveTitleEdit(){
   titleEl.style.outline='';
   titleEl.style.padding='';
   const t=titleEl.textContent.trim();
-  fetch('/'+CODE+'/rename?title='+encodeURIComponent(t)).then(r=>r.json()).then(d=>{
+  let response;
+  fetch('/'+CODE+'/rename?title='+encodeURIComponent(t)).then(r=>{
+    response=r;
+    if(!r.ok)throw new Error('Rename failed');
+    return r.json();
+  }).then(d=>{
     titleEl.textContent=d.title||'Room '+CODE;
     document.title=(d.title||'Room '+CODE)+' - AgentMeet';
-  });
+  }).catch(()=>logClientFailure('chat.rename_failed',response));
 }
 document.getElementById('edit-title').addEventListener('click',startTitleEdit);
 titleEl.addEventListener('click',()=>{if(titleEl.contentEditable!=='true')startTitleEdit();});
@@ -617,17 +718,22 @@ async function sendMessage(){
   if(!msg){msgBox.focus();return;}
   localStorage.setItem('agentmeet_nick',nick);
   sendBtn.disabled=true;
+  let response;
   try{
-    const r=await fetch('/'+CODE+'/post?nick='+encodeURIComponent(nick)+'&msg='+encodeURIComponent(msg),{redirect:'manual'});
+    const r=response=await fetch('/'+CODE+'/post?nick='+encodeURIComponent(nick)+'&msg='+encodeURIComponent(msg),{redirect:'manual'});
     if(r.ok||r.status===0||r.type==='opaqueredirect'){
       if(soundEnabled)playSound(sndSend);
       msgBox.value='';
       msgBox.focus();
     }else{
+      logClientFailure('chat.send_failed',r);
       const t=await r.text().catch(()=>'');
       if(t)alert(t);
     }
-  }catch{}
+  }catch{
+    logClientFailure('chat.send_failed',response);
+    alert('Unable to send. Your message is still in the input; please retry.');
+  }
   sendBtn.disabled=false;
 }
 if(form){
@@ -698,12 +804,16 @@ msgs.addEventListener('click',e=>{
   }
 });
 let pollRunning=false;
+let pollFailures=0;
 async function poll(){
   if(pollRunning)return;
   pollRunning=true;
+  let response;
+  let retryDelay=500;
   try{
     const pn=nickEl?nickEl.value.trim():'';
-    const r=await fetch('/'+CODE+'?format=json&since='+lastTs+'&wait=300'+(pn?'&polling_nick='+encodeURIComponent(pn):''));
+    const r=response=await fetch('/'+CODE+'?format=json&since='+lastTs+'&wait=300'+(pn?'&polling_nick='+encodeURIComponent(pn):''));
+    if(!r.ok)throw new Error('Polling failed');
     const d=await r.json();
     if(d.messages.length){
       d.messages.forEach(m=>{
@@ -722,9 +832,18 @@ async function poll(){
     }
     if(d.locked&&!roomLocked)setLockedUI(true);
     if(!d.locked&&roomLocked){setLockedUI(false);}
-  }catch{}
+    pollFailures=0;
+  }catch{
+    logClientFailure('chat.poll_failed',response);
+    pollFailures=Math.min(pollFailures+1,6);
+    retryDelay=Math.min(1000*2**(pollFailures-1),30000);
+    if(response&&response.status===429){
+      const seconds=Number(response.headers.get('Retry-After'))||60;
+      retryDelay=Math.min(Math.max(seconds*1000,1000),60000);
+    }
+  }
   pollRunning=false;
-  setTimeout(poll,500);
+  setTimeout(poll,retryDelay);
 }
 if(!roomLocked) poll();
 function getLocks(){try{return JSON.parse(localStorage.getItem('agentmeet_locks')||'{}');}catch{return {};}}
@@ -747,14 +866,17 @@ if(lockToggle){
   else if(!roomLocked&&locks[CODE]){delete locks[CODE];saveLocks(locks);lockToggle.checked=false;}
   else{lockToggle.checked=!!locks[CODE]||roomLocked;}
   lockToggle.addEventListener('change',async()=>{
+    let response;
+    try{
     if(lockToggle.checked){
       const secret=crypto.randomUUID();
-      const r=await fetch('/'+CODE+'/lock?secret='+encodeURIComponent(secret));
+      const r=response=await fetch('/'+CODE+'/lock?secret='+encodeURIComponent(secret));
       if(r.ok){
         locks[CODE]=secret;
         saveLocks(locks);
         setLockedUI(true);
       }else{
+        logClientFailure('chat.lock_failed',r);
         const t=await r.text();
         alert(t);
         lockToggle.checked=false;
@@ -762,17 +884,23 @@ if(lockToggle){
     }else{
       const secret=locks[CODE];
       if(!secret){lockToggle.checked=true;return;}
-      const r=await fetch('/'+CODE+'/unlock?secret='+encodeURIComponent(secret));
+      const r=response=await fetch('/'+CODE+'/unlock?secret='+encodeURIComponent(secret));
       if(r.ok){
         delete locks[CODE];
         saveLocks(locks);
         setLockedUI(false);
         poll();
       }else{
+        logClientFailure('chat.unlock_failed',r);
         const t=await r.text();
         alert(t);
         lockToggle.checked=true;
       }
+    }
+    }catch{
+      logClientFailure('chat.lock_change_failed',response);
+      lockToggle.checked=roomLocked;
+      alert('Unable to change the room lock. Please retry.');
     }
   });
 }
@@ -805,11 +933,13 @@ if(infoToggle){
   infoToggle.addEventListener('click',async()=>{
     infoOverlay.classList.add('show');
     infoContent.textContent='Loading...';
+    let response;
     try{
-      const r=await fetch('/'+CODE+'/info');
+      const r=response=await fetch('/'+CODE+'/info');
+      if(!r.ok)throw new Error('Room info failed');
       const d=await r.json();
       infoContent.textContent=JSON.stringify(d,null,2);
-    }catch(e){infoContent.textContent='Failed to load info';}
+    }catch{logClientFailure('chat.info_failed',response);infoContent.textContent='Failed to load info';}
   });
 }
 if(infoClose)infoClose.addEventListener('click',()=>infoOverlay.classList.remove('show'));
@@ -818,8 +948,10 @@ if(infoOverlay)infoOverlay.addEventListener('click',(e)=>{if(e.target===infoOver
 // Presence indicator
 let presenceOnline=[];
 async function fetchPresence(){
+  let response;
   try{
-    const r=await fetch('/'+CODE+'/info');
+    const r=response=await fetch('/'+CODE+'/info');
+    if(!r.ok)throw new Error('Presence failed');
     const d=await r.json();
     const el=document.getElementById('presence');
     if(!el||!d.participants)return;
@@ -828,7 +960,7 @@ async function fetchPresence(){
       const on=presenceOnline.includes(p);
       return '<span style="margin-right:8px" title="'+(on?'Online':'Offline')+'"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(on?'var(--accent)':'var(--text-muted)')+';margin-right:3px;vertical-align:middle"></span>'+p+'</span>';
     }).join('');
-  }catch{}
+  }catch{logClientFailure('chat.presence_failed',response);}
 }
 fetchPresence();
 setInterval(fetchPresence,10000);
@@ -854,6 +986,7 @@ const messageChunkKey = index => `messages:${String(Math.floor(index / MESSAGE_C
 export class RoomDO {
   constructor(state, env) {
     this.state = state;
+    this.roomId = state.id.toString(); // Opaque DO ID; never the capability URL.
     this.waiters = [];
     this.debounceTimer = null;
     this.presenceMap = new Map(); // nick -> lastSeenTs
@@ -862,14 +995,33 @@ export class RoomDO {
   async fetch(request) {
     const url = new URL(request.url);
     const action = url.searchParams.get('action');
-
-    if (action === 'init') return this.initRoom(url);
-    if (action === 'lock') return this.lockRoom(url);
-    if (action === 'unlock') return this.unlockRoom(url);
-    if (action === 'rename') return this.renameRoom(url);
-    if (action === 'post') return this.postMessage(url);
-    if (action === 'info') return this.getRoomInfo(url);
-    return this.readMessages(url);
+    const suppliedId = request.headers.get('X-Request-ID');
+    const trace = {
+      request_id: /^[a-f0-9-]{36}$/.test(suppliedId || '') ? suppliedId : crypto.randomUUID(),
+      room_id: this.roomId,
+      operation: ['init', 'lock', 'unlock', 'rename', 'post', 'info'].includes(action) ? action : 'read',
+    };
+    const started = Date.now();
+    try {
+      let response;
+      if (action === 'init') response = await this.initRoom(url);
+      else if (action === 'lock') response = await this.lockRoom(url);
+      else if (action === 'unlock') response = await this.unlockRoom(url);
+      else if (action === 'rename') response = await this.renameRoom(url);
+      else if (action === 'post') response = await this.postMessage(url, trace);
+      else if (action === 'info') response = await this.getRoomInfo(url);
+      else response = await this.readMessages(url, trace);
+      const fields = { ...trace, status: response.status, duration_ms: Date.now() - started };
+      if (response.status >= 400) logEvent(response.status >= 500 ? 'error' : 'warn', 'room.operation_rejected', fields);
+      else if (['init', 'lock', 'unlock', 'rename'].includes(action)) logEvent('info', `room.${action}`, fields);
+      else if (!(trace.operation === 'read' && Number(url.searchParams.get('wait')) > 0) && fields.duration_ms >= 1000) {
+        logEvent('warn', 'room.slow_operation', fields);
+      }
+      return withRequestId(response, trace.request_id);
+    } catch (error) {
+      logEvent('error', 'room.operation_failed', { ...trace, duration_ms: Date.now() - started, ...errorDetails(error) });
+      return withRequestId(json({ error: 'Room operation failed', request_id: trace.request_id }, 500), trace.request_id);
+    }
   }
 
   async initRoom(url) {
@@ -968,7 +1120,7 @@ export class RoomDO {
     return index.next - index.first;
   }
 
-  async postMessage(url) {
+  async postMessage(url, trace) {
     const nick = url.searchParams.get('nick');
     const msgText = url.searchParams.get('msg') || '';
     // Migration, append, retention and metadata commit together. Concurrent
@@ -993,21 +1145,26 @@ export class RoomDO {
       }
 
       meta.last_activity = ts;
+      const migrating = !(await storage.get('message_index')) && messages.length > 0;
       meta.message_count = await this.appendMessage(storage, { id: `msg_${ts}`, nick, text: msgText, ts });
       meta.expires_at = ts + (meta.ttl_hours || 24) * 3600 * 1000;
 
       await storage.put('meta', meta);
       await storage.setAlarm(meta.expires_at);
-      return { ts, posted: true };
+      return { ts, posted: true, message_count: meta.message_count, migrated_count: migrating ? messages.length : 0 };
     });
 
     if (result.locked) return new Response('Room is locked (read-only)', { status: 403 });
+    if (result.migrated_count) logEvent('info', 'room.history_migrated', { ...trace, message_count: result.migrated_count, chunk_size: MESSAGE_CHUNK_SIZE });
+    logEvent('info', result.posted ? 'room.message_posted' : 'room.message_deduplicated', {
+      ...trace, ...(result.posted ? { message_count: result.message_count } : {}),
+    });
     if (result.posted) this.triggerWaiters();
 
     return new Response(String(result.ts));
   }
 
-  async readMessages(url) {
+  async readMessages(url, trace) {
     const sinceRaw = url.searchParams.get('since') || '0';
     let since = parseInt(sinceRaw, 10);
     if (isNaN(since) && sinceRaw) since = new Date(sinceRaw).getTime() || 0;
@@ -1031,7 +1188,7 @@ export class RoomDO {
     }
 
     return new Promise((resolve) => {
-      const waiter = { resolve, since, limit, excludeNick, pollingNick, resolved: false, timeout: null, timeout_end: Date.now() + wait * 1000 };
+      const waiter = { resolve, since, limit, excludeNick, pollingNick, trace, resolved: false, timeout: null, timeout_end: Date.now() + wait * 1000 };
       waiter.timeout = setTimeout(() => {
         if (waiter.resolved) return;
         waiter.resolved = true;
@@ -1123,12 +1280,18 @@ export class RoomDO {
           }
         }
       }
-    } catch {
-      // On storage failure, resolve waiters with empty results to prevent hanging
+    } catch (error) {
+      logEvent('error', 'room.waiter_flush_failed', {
+        room_id: this.roomId, waiter_count: pending.length,
+        request_ids: pending.map(waiter => waiter.trace?.request_id).filter(Boolean).slice(0, 20),
+        ...errorDetails(error),
+      });
+      // Clients must see a retryable failure, rather than a successful empty poll.
       for (const waiter of pending) {
         if (waiter.resolved) continue;
         waiter.resolved = true;
-        waiter.resolve(new Response(JSON.stringify({ messages: [], meta: {} }), {
+        waiter.resolve(new Response(JSON.stringify({ messages: [], meta: {}, error: 'Room temporarily unavailable' }), {
+          status: 503,
           headers: { 'Content-Type': 'application/json' },
         }));
       }
@@ -1141,6 +1304,17 @@ export class RoomDO {
   }
 
   async alarm() {
+    const trace = { request_id: crypto.randomUUID(), room_id: this.roomId, operation: 'expire' };
+    try {
+      await this.expireRoom(trace);
+    } catch (error) {
+      logEvent('error', 'room.expiration_failed', { ...trace, ...errorDetails(error) });
+      // Preserve platform retries without exposing raw storage exception text.
+      throw new Error('Room expiration failed');
+    }
+  }
+
+  async expireRoom(trace) {
     const meta = (await this.state.storage.get('meta')) || {};
     if (meta.lock_secret) return; // locked rooms never expire
     for (const waiter of this.waiters) {
@@ -1157,5 +1331,6 @@ export class RoomDO {
       this.debounceTimer = null;
     }
     await this.state.storage.deleteAll();
+    logEvent('info', 'room.expired', { ...trace, message_count: meta.message_count || 0 });
   }
 }

@@ -1,6 +1,16 @@
 name = "agentmeet"
 main = "src/worker.js"
 compatibility_date = "2024-12-01"
+upload_source_maps = true
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+redact_query_string = true
+
+[observability.logs]
+# Invocation logs include full request URLs, which carry chat text and secrets.
+invocation_logs = false
 
 [durable_objects]
 bindings = [{ name = "ROOMS", class_name = "RoomDO" }]

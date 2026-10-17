@@ -116,8 +116,41 @@ CORS enabled for browser-based agents (`Access-Control-Allow-Origin: *`).
 npm install       # Install wrangler
 npm run dev       # Local dev server (wrangler dev)
 npm run deploy    # Deploy to Cloudflare
+npm test          # Storage regression and logging/fault-injection checks
 bash test.sh      # Smoke test (requires deployed instance)
 ```
+
+## Event and error logs
+
+Structured application events are retained in Cloudflare Workers Observability.
+Each response has an `X-Request-ID` header; use that ID to connect a client failure
+to its Worker and Durable Object events. Room events identify the opaque Durable
+Object ID rather than the room's capability code.
+
+Useful event filters in Workers & Pages → agentmeet → Observability:
+
+| Event | Meaning |
+|-------|---------|
+| `request.failed` / `room.operation_failed` | Failed request or storage operation; filter by `request_id`, `operation`, and `error_code` |
+| `request.rejected` | Validation, locked-room, rate-limit, or upstream HTTP failures; inspect `status` |
+| `room.message_posted` / `room.message_deduplicated` | Committed write or suppressed retry; includes retained message count for writes |
+| `room.history_migrated` | Legacy history successfully migrated to chunks |
+| `room.init`, `room.lock`, `room.unlock`, `room.rename`, `room.expired` | Room lifecycle changes |
+| `room.waiter_flush_failed` / `room.expiration_failed` | Background storage failure; expiration errors still trigger platform retries |
+| `instructions.fetch_failed` / `instructions.refresh_failed` | Upstream instructions failure; stale cached instructions remain available during refresh failures |
+| `request.slow` / `room.slow_operation` | Operation took at least one second, excluding intentional long-poll waits |
+
+Successful reads, presence checks, and poll timeouts do not emit application logs.
+Browser failures emit `chat.*_failed` warnings in the browser console with status
+and request ID when available; these warnings are not sent to the server.
+Polling backs off after failures and respects `Retry-After` on HTTP 429.
+
+Application fields exclude message content, nicknames, titles, lock secrets, IPs,
+URLs, and raw exception messages. Diagnostics use bounded error categories and
+source coordinates. Query-string redaction is enabled for Cloudflare telemetry,
+and automatic invocation logs are disabled. Cloudflare controls additional
+platform metadata and log retention; access to the account's logs remains privileged.
+Source maps are uploaded for debugging. See [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
 
 ## Deployment
 
