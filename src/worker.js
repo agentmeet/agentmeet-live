@@ -845,6 +845,12 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Even 2,000-character Unicode messages stay below the KV backend's 128 KiB
+// per-value limit in chunks of 16 (structured-clone storage is not JSON).
+const MESSAGE_CHUNK_SIZE = 16;
+const MAX_MESSAGES = 10000;
+const messageChunkKey = index => `messages:${String(Math.floor(index / MESSAGE_CHUNK_SIZE)).padStart(12, '0')}`;
+
 export class RoomDO {
   constructor(state, env) {
     this.state = state;
@@ -879,7 +885,7 @@ export class RoomDO {
       title,
       expires_at,
     });
-    await this.state.storage.put('messages', []);
+    await this.state.storage.put('message_index', { first: 0, next: 0 });
     await this.state.storage.setAlarm(expires_at);
     return new Response('OK');
   }
@@ -930,42 +936,75 @@ export class RoomDO {
     });
   }
 
+  async storedMessages(storage = this.state.storage) {
+    const index = await storage.get('message_index');
+    // Existing rooms remain readable before their first migrated write.
+    if (!index) return (await storage.get('messages')) || [];
+    const chunks = await storage.list({ prefix: 'messages:' });
+    return [...chunks.values()].flat().slice(index.first % MESSAGE_CHUNK_SIZE);
+  }
+
+  async appendMessage(storage, message) {
+    let index = await storage.get('message_index');
+    if (!index) {
+      const legacy = (await storage.get('messages')) || [];
+      for (let i = 0; i < legacy.length; i += MESSAGE_CHUNK_SIZE) {
+        await storage.put(messageChunkKey(i), legacy.slice(i, i + MESSAGE_CHUNK_SIZE));
+      }
+      index = { first: 0, next: legacy.length };
+      await storage.delete('messages');
+    }
+    const key = messageChunkKey(index.next);
+    const chunk = (await storage.get(key)) || [];
+    chunk.push(message);
+    await storage.put(key, chunk);
+    index.next++;
+    const first = Math.max(0, index.next - MAX_MESSAGES);
+    if (messageChunkKey(first) !== messageChunkKey(index.first)) {
+      await storage.delete(messageChunkKey(index.first));
+    }
+    index.first = first;
+    await storage.put('message_index', index);
+    return index.next - index.first;
+  }
+
   async postMessage(url) {
     const nick = url.searchParams.get('nick');
     const msgText = url.searchParams.get('msg') || '';
-    const ts = Date.now();
+    // Migration, append, retention and metadata commit together. Concurrent
+    // writers cannot overwrite one another or leave a partial migration.
+    const result = await this.state.storage.transaction(async storage => {
+      const messages = await this.storedMessages(storage);
+      const ts = Math.max(Date.now(), (messages.at(-1)?.ts || 0) + 1);
+      const meta = (await storage.get('meta')) || {
+        created_at: ts, last_activity: ts, message_count: 0, ttl_hours: 24, title: null,
+      };
 
-    let messages = (await this.state.storage.get('messages')) || [];
-    let meta = (await this.state.storage.get('meta')) || {
-      created_at: ts, last_activity: ts, message_count: 0, ttl_hours: 24, title: null,
-    };
-
-    if (meta.lock_secret) {
-      return new Response('Room is locked (read-only)', { status: 403 });
-    }
-
-    // Dedup: reject if same nick+text within last 5 messages and 30 seconds
-    const recent = messages.slice(-5);
-    for (const prev of recent) {
-      if (prev.nick === nick && prev.text === msgText && ts - prev.ts < 30000) {
-        return new Response(String(prev.ts));
+      if (meta.lock_secret) {
+        return { locked: true };
       }
-    }
 
-    messages.push({ id: `msg_${ts}`, nick, text: msgText, ts });
-    if (messages.length > 10000) messages.splice(0, messages.length - 10000);
+      // Dedup: reject if same nick+text within last 5 messages and 30 seconds
+      const recent = messages.slice(-5);
+      for (const prev of recent) {
+        if (prev.nick === nick && prev.text === msgText && ts - prev.ts < 30000) {
+          return { ts: prev.ts };
+        }
+      }
 
-    meta.last_activity = ts;
-    meta.message_count = messages.length;
-    meta.expires_at = ts + (meta.ttl_hours || 24) * 3600 * 1000;
+      meta.last_activity = ts;
+      meta.message_count = await this.appendMessage(storage, { id: `msg_${ts}`, nick, text: msgText, ts });
+      meta.expires_at = ts + (meta.ttl_hours || 24) * 3600 * 1000;
 
-    await this.state.storage.put('messages', messages);
-    await this.state.storage.put('meta', meta);
-    await this.state.storage.setAlarm(meta.expires_at);
+      await storage.put('meta', meta);
+      await storage.setAlarm(meta.expires_at);
+      return { ts, posted: true };
+    });
 
-    this.triggerWaiters();
+    if (result.locked) return new Response('Room is locked (read-only)', { status: 403 });
+    if (result.posted) this.triggerWaiters();
 
-    return new Response(String(ts));
+    return new Response(String(result.ts));
   }
 
   async readMessages(url) {
@@ -978,7 +1017,7 @@ export class RoomDO {
     const pollingNick = url.searchParams.get('polling_nick') || excludeNick;
     if (pollingNick) this.presenceMap.set(pollingNick, Date.now());
 
-    let messages = (await this.state.storage.get('messages')) || [];
+    let messages = await this.storedMessages();
     const meta = (await this.state.storage.get('meta')) || {};
 
     if (since) messages = messages.filter(m => m.ts > since);
@@ -1007,7 +1046,7 @@ export class RoomDO {
 
   async getRoomInfo(url) {
     const meta = (await this.state.storage.get('meta')) || {};
-    const messages = (await this.state.storage.get('messages')) || [];
+    const messages = await this.storedMessages();
     const participants = [...new Set(messages.map(m => m.nick))];
     const now = Date.now();
     const online = [...this.presenceMap.entries()].filter(([_, ts]) => now - ts < 30000).map(([nick]) => nick);
@@ -1050,7 +1089,7 @@ export class RoomDO {
     for (const waiter of pending) clearTimeout(waiter.timeout);
 
     try {
-      const messages = (await this.state.storage.get('messages')) || [];
+      const messages = await this.storedMessages();
       const meta = (await this.state.storage.get('meta')) || {};
 
       for (const waiter of pending) {
