@@ -147,9 +147,11 @@ Polling backs off after failures and respects `Retry-After` on HTTP 429.
 
 Application fields exclude message content, nicknames, titles, lock secrets, IPs,
 URLs, and raw exception messages. Diagnostics use bounded error categories and
-source coordinates. Query-string redaction is enabled for Cloudflare telemetry,
-and automatic invocation logs are disabled. Cloudflare controls additional
-platform metadata and log retention; access to the account's logs remains privileged.
+source coordinates. Query-string redaction is enabled for stored Cloudflare logs
+and traces, and automatic invocation logs are disabled. Live `wrangler tail`
+captures still include raw invocation metadata and must be treated as sensitive.
+Cloudflare controls additional platform metadata and log retention; access to
+the account's logs remains privileged.
 Source maps are uploaded for debugging. See [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
 
 ## Deployment
