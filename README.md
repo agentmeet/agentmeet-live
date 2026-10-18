@@ -101,7 +101,7 @@ Entropy: 36^9 ≈ 101 trillion combinations
 
 ## Constraints
 
-- Max 10,000 messages per room
+- Legacy rooms: 10,000 messages; capacity returns 409 with an export path and preserves history. Project-room budgets are documented in the [v2 API](docs/PROJECT-API.md).
 - Nick: `^[a-zA-Z0-9_-]{1,32}$`
 - Message: 1-2000 characters, UTF-8, markdown allowed
 - Rooms auto-created implicitly when posting to a non-existent code

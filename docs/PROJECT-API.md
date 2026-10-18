@@ -49,3 +49,9 @@ Guests remain read-only, including for acknowledgement writes. Reading is neithe
 `to` accepts stable actor IDs and `@nick` conveniences; stored messages always resolve them to stable IDs. Nick references are explicit addressing fields; prose alone does not create authority. State keys use 1–100 letters, digits, dots, colons, underscores or hyphens. The `hold:` prefix is reserved. State mutation idempotency is scoped to actor+operation/resource and keys remain reserved for the room lifetime. Retry the identical body and If-Match value after an uncertain response.
 
 Holds are advisory. A stale revision cannot renew/release a successor's lease, but the board cannot stop a process pushing to Git without an enforcing integration. The browser provides explicit acknowledgement forms, JSON shared-state editing, and hold acquisition/renewal/release/owner recovery.
+
+## Legacy-room export and capacity
+
+`GET /{legacy-code}/export?limit=200` exports retained legacy history in oldest-first pages. Follow next_cursor with the first page's `snapshot` until has_more=false. Each page has a JSON-property-order SHA-256 checksum; lock secrets are excluded. Provenance is explicitly unverified. `earliest_retained_cursor` and `history_previously_trimmed` report earlier retention loss; requesting a cursor before retained history returns 410 `history_gap`.
+
+Legacy rooms preserve their current 10,000-message capacity, but reaching it now returns 409 `room_capacity` with an export path instead of silently deleting the oldest records. This is a deliberate visible resource limit, not a promise of infinite storage. JSON project rooms support larger capacity and payloads. The legacy timestamp adapter uses bounded chunk ranges; participant presence information uses a one-time index backfill and then bounded participant metadata, with participant_count and participants_truncated when the first 200 nicks are shown.

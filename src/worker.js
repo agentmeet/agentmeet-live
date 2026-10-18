@@ -9,7 +9,7 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const ROOM_RE = /^\/([a-z0-9]{3}-[a-z0-9]{3}-[a-z0-9]{3})(\/info|\/post|\/human|\/lock|\/unlock|\/rename)?$/;
+const ROOM_RE = /^\/([a-z0-9]{3}-[a-z0-9]{3}-[a-z0-9]{3})(\/info|\/post|\/human|\/lock|\/unlock|\/rename|\/export)?$/;
 
 // --- Rate limiting (in-worker memory, per-isolate) ---
 const RATE_LIMITS = { create: 10, write: 30, read: 120 };
@@ -228,6 +228,11 @@ async function handleRequest(request, env, ctx, requestId) {
   const suffix = match[2];
   const room = roomConnection(env, code, requestId);
 
+  if (suffix === '/export') {
+    const rl = rateLimit(ip, 'read'); if (rl) return rl;
+    return room.fetch(new Request(`https://room/${code}?${new URLSearchParams({ action: 'export', cursor: url.searchParams.get('cursor') || '', limit: url.searchParams.get('limit') || '200', snapshot: url.searchParams.get('snapshot') || '' })}`));
+  }
+
   if (suffix === '/info') {
     const rl = rateLimit(ip, 'read');
     if (rl) return rl;
@@ -280,7 +285,7 @@ async function handleRequest(request, env, ctx, requestId) {
     const trimmed = msg.trim();
     const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(trimmed)}`));
     const respText = await postResp.text();
-    if (postResp.status === 403) return text(respText, 403);
+    if (!postResp.ok) return new Response(respText, { status: postResp.status, headers: postResp.headers });
     if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
     return redirect(`${url.origin}/${code}`);
   }
@@ -298,7 +303,7 @@ async function handleRequest(request, env, ctx, requestId) {
     const trimmed = msg.trim();
     const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(nick)}&msg=${encodeURIComponent(trimmed)}`));
     const respText = await postResp.text();
-    if (postResp.status === 403) return text(respText, 403);
+    if (!postResp.ok) return new Response(respText, { status: postResp.status, headers: postResp.headers });
     if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
     const redir = url.searchParams.get('redirect');
     return redirect(`${url.origin}/${code}${redir === 'human' ? '/human' : ''}`);
@@ -315,7 +320,7 @@ async function handleRequest(request, env, ctx, requestId) {
     const trimmed = qMsg.trim();
     const postResp = await room.fetch(new Request(`https://room/${code}?action=post&nick=${encodeURIComponent(qNick)}&msg=${encodeURIComponent(trimmed)}`));
     const respText = await postResp.text();
-    if (postResp.status === 403) return text(respText, 403);
+    if (!postResp.ok) return new Response(respText, { status: postResp.status, headers: postResp.headers });
     if (wait > 0) return redirect(buildWaitRedirect(url, code, respText, wait));
     return redirect(`${url.origin}/${code}`);
   }
@@ -1057,6 +1062,7 @@ export class RoomDO {
       else if (action === 'rename') response = await this.renameRoom(url);
       else if (action === 'post') response = await this.postMessage(url, trace);
       else if (action === 'info') response = await this.getRoomInfo(url);
+      else if (action === 'export') response = await this.exportHistory(url);
       else response = await this.readMessages(url, trace);
       const fields = { ...trace, status: response.status, duration_ms: Date.now() - started };
       if (response.status >= 400) logEvent(response.status >= 500 ? 'error' : 'warn', 'room.operation_rejected', fields);
@@ -1085,6 +1091,7 @@ export class RoomDO {
       expires_at,
     });
     await this.state.storage.put('message_index', { first: 0, next: 0 });
+    await this.state.storage.put('participant_index_count', 0);
     await this.state.storage.setAlarm(expires_at);
     return new Response('OK');
   }
@@ -1143,6 +1150,83 @@ export class RoomDO {
     return [...chunks.values()].flat().slice(index.first % MESSAGE_CHUNK_SIZE);
   }
 
+  async ensureParticipantIndex(storage) {
+    let count = await storage.get('participant_index_count');
+    if (count !== undefined) return count;
+    const nicks = [...new Set((await this.storedMessages(storage)).map(m => m.nick))];
+    for (let i = 0; i < nicks.length; i += 128) {
+      await storage.put(Object.fromEntries(nicks.slice(i, i + 128).map(nick => ['participant:' + nick, true])));
+    }
+    count = nicks.length;
+    await storage.put('participant_index_count', count);
+    return count;
+  }
+
+  async messagePage(since, limit, excludeNick = '', storage = this.state.storage) {
+    const index = await storage.get('message_index');
+    if (!index) {
+      const matches = ((await storage.get('messages')) || []).filter(m => (!since || m.ts > since) && (!excludeNick || m.nick !== excludeNick));
+      return { messages: since ? matches.slice(0, limit) : matches.slice(-limit), has_more: Boolean(since && matches.length > limit) };
+    }
+    if (index.next <= index.first) return { messages: [], has_more: false };
+    const cache = new Map();
+    const chunk = async number => {
+      if (!cache.has(number)) {
+        const messages = await storage.get(messageChunkKey(number * MESSAGE_CHUNK_SIZE));
+        if (!messages) throw new Error('Storage message chunk is missing');
+        cache.set(number, messages);
+      }
+      return cache.get(number);
+    };
+    const firstChunk = Math.floor(index.first / MESSAGE_CHUNK_SIZE);
+    const lastChunk = Math.floor((index.next - 1) / MESSAGE_CHUNK_SIZE);
+    let start = lastChunk;
+    if (since) {
+      let low = firstChunk, high = lastChunk + 1;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (((await chunk(mid)).at(-1)?.ts || 0) <= since) low = mid + 1;
+        else high = mid;
+      }
+      start = low;
+    }
+    let result = [];
+    for (let number = start; number >= firstChunk && number <= lastChunk; number += since ? 1 : -1) {
+      const matches = (await chunk(number)).filter((m, offset) => {
+        const position = number * MESSAGE_CHUNK_SIZE + offset;
+        return position >= index.first && position < index.next && (!since || m.ts > since) && (!excludeNick || m.nick !== excludeNick);
+      });
+      result = since ? result.concat(matches) : matches.concat(result);
+      if (result.length >= limit + (since ? 1 : 0)) break;
+    }
+    return { messages: since ? result.slice(0, limit) : result.slice(-limit), has_more: Boolean(since && result.length > limit) };
+  }
+
+  async exportHistory(url) {
+    const index = (await this.state.storage.get('message_index')) || { first: 0, next: ((await this.state.storage.get('messages')) || []).length };
+    const raw = url.searchParams.get('cursor') || String(index.first);
+    const limitRaw = url.searchParams.get('limit') || '200';
+    const snapshotRaw = url.searchParams.get('snapshot') || String(index.next);
+    if (![raw, limitRaw, snapshotRaw].every(value => /^\d+$/.test(value))) return json({ error: 'Invalid export cursor, limit or snapshot' }, 400);
+    const position = Number(raw), limit = Number(limitRaw), snapshot = Number(snapshotRaw);
+    if (![position, limit, snapshot].every(Number.isSafeInteger) || limit < 1 || limit > 200 || snapshot > index.next || position > snapshot) return json({ error: 'Invalid export range' }, 400);
+    if (position < index.first) return json({ error: 'Earlier history was removed by a previous retention policy', code: 'history_gap', earliest_cursor: String(index.first) }, 410);
+    const end = Math.min(position + limit, snapshot); let messages = [];
+    if (await this.state.storage.get('message_index')) {
+      for (let offset = position; offset < end;) {
+        const chunk = await this.state.storage.get(messageChunkKey(offset));
+        if (!chunk) throw new Error('Storage message chunk is missing');
+        const take = Math.min(end - offset, MESSAGE_CHUNK_SIZE - offset % MESSAGE_CHUNK_SIZE);
+        messages.push(...chunk.slice(offset % MESSAGE_CHUNK_SIZE, offset % MESSAGE_CHUNK_SIZE + take)); offset += take;
+      }
+    } else messages = ((await this.state.storage.get('messages')) || []).slice(position, end);
+    const stored = (await this.state.storage.get('meta')) || {};
+    const meta = { title: stored.title || null, created_at: stored.created_at || null, expires_at: stored.lock_secret ? null : stored.expires_at || null, ttl_hours: stored.ttl_hours || 24, locked: Boolean(stored.lock_secret) };
+    const content = { schema_version: 1, room: url.pathname.slice(1), provenance: 'legacy-unverified', meta, messages, next_cursor: String(end), has_more: end < snapshot, snapshot, earliest_retained_cursor: String(index.first), history_previously_trimmed: index.first > 0 };
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(content)));
+    return json({ ...content, checksum: { algorithm: 'SHA-256', encoding: 'json-property-order', value: [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('') } });
+  }
+
   async appendMessage(storage, message) {
     let index = await storage.get('message_index');
     if (!index) {
@@ -1158,11 +1242,6 @@ export class RoomDO {
     chunk.push(message);
     await storage.put(key, chunk);
     index.next++;
-    const first = Math.max(0, index.next - MAX_MESSAGES);
-    if (messageChunkKey(first) !== messageChunkKey(index.first)) {
-      await storage.delete(messageChunkKey(index.first));
-    }
-    index.first = first;
     await storage.put('message_index', index);
     return index.next - index.first;
   }
@@ -1173,7 +1252,7 @@ export class RoomDO {
     // Migration, append, retention and metadata commit together. Concurrent
     // writers cannot overwrite one another or leave a partial migration.
     const result = await this.state.storage.transaction(async storage => {
-      const messages = await this.storedMessages(storage);
+      const { messages } = await this.messagePage(0, 5, '', storage);
       const ts = Math.max(Date.now(), (messages.at(-1)?.ts || 0) + 1);
       const meta = (await storage.get('meta')) || {
         created_at: ts, last_activity: ts, message_count: 0, ttl_hours: 24, title: null,
@@ -1191,16 +1270,25 @@ export class RoomDO {
         }
       }
 
+      const index = await storage.get('message_index');
+      const legacyCount = index ? 0 : ((await storage.get('messages')) || []).length;
+      if ((index ? index.next - index.first : legacyCount) >= MAX_MESSAGES) return { capacity: true };
+      let participantCount = await this.ensureParticipantIndex(storage);
+      if (!(await storage.get('participant:' + nick))) {
+        await storage.put('participant:' + nick, true);
+        await storage.put('participant_index_count', ++participantCount);
+      }
       meta.last_activity = ts;
-      const migrating = !(await storage.get('message_index')) && messages.length > 0;
+      const migrating = !index && legacyCount > 0;
       meta.message_count = await this.appendMessage(storage, { id: `msg_${ts}`, nick, text: msgText, ts });
       meta.expires_at = ts + (meta.ttl_hours || 24) * 3600 * 1000;
 
       await storage.put('meta', meta);
       await storage.setAlarm(meta.expires_at);
-      return { ts, posted: true, message_count: meta.message_count, migrated_count: migrating ? messages.length : 0 };
+      return { ts, posted: true, message_count: meta.message_count, migrated_count: migrating ? legacyCount : 0 };
     });
 
+    if (result.capacity) return json({ error: 'Room capacity reached; history is preserved. Export before continuing in another room.', code: 'room_capacity', export: url.pathname + '/export', capacity: MAX_MESSAGES }, 409);
     if (result.locked) return new Response('Room is locked (read-only)', { status: 403 });
     if (result.migrated_count) logEvent('info', 'room.history_migrated', { ...trace, message_count: result.migrated_count, chunk_size: MESSAGE_CHUNK_SIZE });
     logEvent('info', result.posted ? 'room.message_posted' : 'room.message_deduplicated', {
@@ -1223,13 +1311,8 @@ export class RoomDO {
     const pollingNick = url.searchParams.get('polling_nick') || excludeNick;
     if (pollingNick) this.presenceMap.set(pollingNick, Date.now());
 
-    let messages = await this.storedMessages();
+    const { messages, has_more } = await this.messagePage(since, limit, excludeNick);
     const meta = (await this.state.storage.get('meta')) || {};
-
-    if (since) messages = messages.filter(m => m.ts > since);
-    if (excludeNick) messages = messages.filter(m => m.nick !== excludeNick);
-    const has_more = since > 0 && messages.length > limit;
-    messages = since > 0 ? messages.slice(0, limit) : messages.slice(-limit);
 
     if (messages.length > 0 || wait === 0) {
       return new Response(JSON.stringify({ messages, meta, has_more }), {
@@ -1253,8 +1336,9 @@ export class RoomDO {
 
   async getRoomInfo(url) {
     const meta = (await this.state.storage.get('meta')) || {};
-    const messages = await this.storedMessages();
-    const participants = [...new Set(messages.map(m => m.nick))];
+    const participantCount = await this.state.storage.transaction(storage => this.ensureParticipantIndex(storage));
+    const indexedParticipants = await this.state.storage.list({ prefix: 'participant:', limit: 200 });
+    const participants = [...indexedParticipants.keys()].slice(0, 200).map(key => key.slice('participant:'.length));
     const now = Date.now();
     const online = [...this.presenceMap.entries()].filter(([_, ts]) => now - ts < 30000).map(([nick]) => nick);
     const code = url.pathname.slice(1);
@@ -1266,6 +1350,8 @@ export class RoomDO {
       message_count: meta.message_count || 0,
       locked: !!meta.lock_secret,
       participants,
+      participant_count: participantCount,
+      participants_truncated: participantCount > participants.length,
       online,
       expires_at: meta.lock_secret ? null : (meta.expires_at
         ? new Date(meta.expires_at).toISOString()
@@ -1296,15 +1382,11 @@ export class RoomDO {
     for (const waiter of pending) clearTimeout(waiter.timeout);
 
     try {
-      const messages = await this.storedMessages();
       const meta = (await this.state.storage.get('meta')) || {};
 
       for (const waiter of pending) {
         if (waiter.resolved) continue;
-        let filtered = waiter.since ? messages.filter(m => m.ts > waiter.since) : messages;
-        if (waiter.excludeNick) filtered = filtered.filter(m => m.nick !== waiter.excludeNick);
-        const has_more = waiter.since > 0 && filtered.length > waiter.limit;
-        filtered = waiter.since > 0 ? filtered.slice(0, waiter.limit) : filtered.slice(-waiter.limit);
+        const { messages: filtered, has_more } = await this.messagePage(waiter.since, waiter.limit, waiter.excludeNick);
         if (filtered.length > 0) {
           waiter.resolved = true;
           waiter.resolve(new Response(JSON.stringify({ messages: filtered, meta, has_more }), {

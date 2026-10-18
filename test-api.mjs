@@ -72,6 +72,19 @@ try {
   const emoji = await (await mf.dispatchFetch('http://localhost/emo-max-001?format=json&limit=200')).json();
   assert.equal(emoji.message_count, 17);
   assert.ok(emoji.messages.every(message => message.text === '😀'.repeat(2000)));
+  const capacityRoom = ns.get(ns.idFromName('cap-tst-001'));
+  await capacityRoom.fetch('https://room/cap-tst-001?action=__seed',{method:'POST',body:JSON.stringify({
+    meta:{created_at:start,message_count:10000,ttl_hours:1},message_index:{first:0,next:10000},
+    'messages:000000000624':Array.from({length:16},(_,i)=>({id:'last'+i,ts:start+i,nick:'previous',text:'last chunk'})),
+  })});
+  for (const [path, options] of [
+    ['/cap-tst-001/post?nick=capacity&msg=blocked',{}],
+    ['/cap-tst-001?nick=capacity&msg=blocked',{}],
+    ['/cap-tst-001',{method:'POST',body:new URLSearchParams({nick:'capacity',msg:'blocked'})}],
+  ]) {
+    const rejected = await mf.dispatchFetch('http://localhost'+path,{...options,redirect:'manual',headers:{'CF-Connecting-IP':'capacity-test'}});
+    assert.equal(rejected.status,409);assert.equal((await rejected.json()).code,'room_capacity','adapters preserve actionable capacity errors');
+  }
 } finally { await mf.dispose(); }
 
 const failing = createServer((req, res) => {

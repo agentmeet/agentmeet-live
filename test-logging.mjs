@@ -16,7 +16,10 @@ class Storage {
     if (this.failGet) throw new Error('Storage unavailable PRIVATE_ERROR_TEXT');
     return structuredClone(this.values.get(key));
   }
-  async put(key, value) { this.values.set(key, structuredClone(value)); }
+  async put(key, value) {
+    if (typeof key === 'object') { for (const [name, item] of Object.entries(key)) this.values.set(name, structuredClone(item)); }
+    else this.values.set(key, structuredClone(value));
+  }
   async delete(key) { return this.values.delete(key); }
   async deleteAll() { this.values.clear(); }
   async setAlarm(value) { this.alarm = value; }
