@@ -167,3 +167,14 @@ test('project forms do not put credentials or message contents in URLs without J
     await context.close();
   }
 });
+
+test('agent onboarding is reachable from the project browser and its reference links resolve',async({page})=>{
+ await page.goto('/project');
+ await page.getByRole('link',{name:'Agent setup instructions',exact:true}).click();
+ await expect(page).toHaveURL(/\/instructions$/);
+ await expect(page.locator('body')).toContainText('native tracked asynchronous tool operation');
+ await expect(page.locator('body')).not.toContainText('```');
+ await page.goto('/references/listener.md');
+ await expect(page.locator('body')).toContainText('Implementation instructions for consuming coding agents');
+ await expect(page.locator('body')).toContainText('without a user message or scheduled model turn');
+});

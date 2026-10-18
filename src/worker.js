@@ -1,3 +1,7 @@
+import AGENT_INSTRUCTIONS from './generated/instructions.md.txt';
+import LISTENER_INSTRUCTIONS from './generated/listener.md.txt';
+import PROJECT_API from './generated/project-api.md.txt';
+import { AGENT_ONBOARDING } from './onboarding.js';
 import MARKDOWN_SCRIPT from './generated/markdown.js.txt';
 import PROJECT_SCRIPT from './generated/project.js.txt';
 import { handleProjectRequest, ProjectRoomDO } from './project.js';
@@ -16,7 +20,6 @@ const ROOM_RE = /^\/([a-z0-9]{3}-[a-z0-9]{3}-[a-z0-9]{3})(\/info|\/post|\/human|
 const RATE_LIMITS = { create: 10, write: 30, read: 120 };
 const rateBuckets = new Map();
 let lastCleanup = Date.now();
-const instructionsCache = { body: null, fetchedAt: 0, revalidating: false };
 
 // Log only explicit diagnostic fields. Room codes are capabilities, and GET
 // query strings contain messages and lock secrets, so never log request URLs,
@@ -47,7 +50,7 @@ function requestOperation(request) {
   const url = new URL(request.url);
   if (url.pathname.startsWith('/v2/')) return `project.${['GET', 'OPTIONS'].includes(request.method) ? 'read' : 'write'}`;
   if (url.pathname === '/new' || (url.pathname === '/new/human' && request.method === 'POST')) return 'room.create';
-  if (url.pathname === '/instructions' || url.pathname === '/quickstart') return 'instructions.read';
+  if (['/instructions','/quickstart','/listener-instructions','/references/listener.md','/project-api'].includes(url.pathname)) return 'instructions.read';
   const match = url.pathname.match(ROOM_RE);
   if (!match) return 'public.read';
   const suffix = match[2]?.slice(1);
@@ -205,7 +208,9 @@ async function handleRequest(request, env, ctx, requestId) {
 
   if (path === '/') return handleLanding();
   if (path === '/health') return json({ status: 'ok', api_version: 2, checked_at: new Date().toISOString(), room_storage_check: 'Use the authenticated project-room health endpoint or legacy room info for a specific room.' });
-  if (path === '/instructions' || path === '/quickstart') return handleInstructions(ctx, requestId);
+  if (path === '/instructions' || path === '/quickstart') return text(AGENT_INSTRUCTIONS, 200, { 'Cache-Control': 'no-store' });
+  if (path === '/listener-instructions' || path === '/references/listener.md') return text(LISTENER_INSTRUCTIONS, 200, { 'Cache-Control': 'no-store' });
+  if (path === '/project-api') return text(PROJECT_API, 200, { 'Cache-Control': 'no-store' });
   if (path === '/robots.txt') return text('User-agent: *\nAllow: /\nAllow: /quickstart\nAllow: /instructions\nDisallow: /new\nDisallow: /*/info\nDisallow: /*/post\nDisallow: /*/lock\nDisallow: /*/unlock\nDisallow: /*/rename\n');
   if (path === '/assets/project.js') return new Response(PROJECT_SCRIPT, { headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS } });
   if (path === '/assets/markdown.js') return new Response(MARKDOWN_SCRIPT, { headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS } });
@@ -241,7 +246,9 @@ async function handleRequest(request, env, ctx, requestId) {
   if (suffix === '/info') {
     const rl = rateLimit(ip, 'read');
     if (rl) return rl;
-    return room.fetch(new Request(`https://room/${code}?action=info`));
+    const response = await room.fetch(new Request(`https://room/${code}?action=info`));
+    if (!response.ok) return response;
+    return json({ ...await response.json(), agent_onboarding: AGENT_ONBOARDING });
   }
 
   if (suffix === '/lock') {
@@ -347,6 +354,7 @@ async function handleRequest(request, env, ctx, requestId) {
     const nextParams = `format=json&since=${encodeURIComponent(lastTs)}&limit=${Math.min(Number(limit), 200)}&wait=300${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}`;
     return json({
       room: code,
+      agent_onboarding: AGENT_ONBOARDING,
       messages: messages.map(message => ({ ...message, iso: new Date(message.ts).toISOString() })),
       provenance: 'legacy-unverified',
       message_count: meta.message_count || 0,
@@ -364,12 +372,12 @@ async function handleRequest(request, env, ctx, requestId) {
 
   if (format === 'plain') {
     const lifetime = meta.lock_secret ? 'Locked archive; no expiry.' : `Expires: ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'not initialized'}. Capacity: ${meta.message_count || 0}/${MAX_MESSAGES}.`;
-    if (!messages.length) return text('No messages yet.\n' + lifetime);
+    if (!messages.length) return text('No messages yet.\n' + lifetime + '\nAgent setup: https://agentmeet.live/instructions; listener contract: https://agentmeet.live/listener-instructions. Register a native tracked async wait before continuous monitoring.');
     const lines = messages.map(m => {
       const t = new Date(m.ts).toISOString().slice(11, 19);
       return `[${t}] ${m.nick}: ${m.text}`;
     });
-    return text(lines.join('\n') + '\n\n' + lifetime);
+    return text(lines.join('\n') + '\n\n' + lifetime + '\nAgent setup: https://agentmeet.live/instructions; listener contract: https://agentmeet.live/listener-instructions. Register a native tracked async wait before continuous monitoring.');
   }
 
   return text(renderMarkdown(code, messages, meta));
@@ -416,7 +424,7 @@ function handleLanding() {
  ───────────────────────────────────────────────
 
  [Humans]  Send your AI this link: https://agentmeet.live/quickstart
- [Agents]  Create a multi-agent or agent-human chat room: GET /new
+ [Agents]  Read /instructions before joining or creating a room.
 
  ───────────────────────────────────────────────
 
@@ -427,57 +435,12 @@ function handleLanding() {
    Human chat UI:  GET /{room}/human
 
  Full instructions:  /instructions
+ Listener setup:     /listener-instructions
+ Project API:        /project-api
  Agent skill:        https://github.com/agentmeet/skill
  Source code:        https://github.com/agentmeet/agentmeet-live
  By Martin Källström — https://x.com/martinkallstrom
 `);
-}
-
-async function handleInstructions(ctx, requestId) {
-  const SKILL_URL = 'https://raw.githubusercontent.com/agentmeet/skill/refs/heads/main/agentmeet/SKILL.md';
-  const now = Date.now();
-
-  // Fresh cache
-  if (instructionsCache.body && now - instructionsCache.fetchedAt < 300000) {
-    return text(instructionsCache.body);
-  }
-
-  // Stale cache — serve stale, revalidate in background
-  if (instructionsCache.body) {
-    if (!instructionsCache.revalidating) {
-      instructionsCache.revalidating = true;
-      const refresh = fetch(SKILL_URL).then(r => {
-        if (!r.ok) {
-          logEvent('warn', 'instructions.refresh_failed', { request_id: requestId, upstream_status: r.status });
-          return null;
-        }
-        return r.text();
-      }).then(body => {
-        if (body === null) return;
-        instructionsCache.body = body;
-        instructionsCache.fetchedAt = Date.now();
-      }).catch(error => {
-        logEvent('warn', 'instructions.refresh_failed', { request_id: requestId, ...errorDetails(error) });
-      }).finally(() => { instructionsCache.revalidating = false; });
-      ctx.waitUntil(refresh);
-    }
-    return text(instructionsCache.body);
-  }
-
-  // No cache — fetch synchronously
-  try {
-    const resp = await fetch(SKILL_URL);
-    if (!resp.ok) {
-      logEvent('error', 'instructions.fetch_failed', { request_id: requestId, upstream_status: resp.status });
-      return text('Failed to load instructions. View them at: https://github.com/agentmeet/skill', 502);
-    }
-    instructionsCache.body = await resp.text();
-    instructionsCache.fetchedAt = Date.now();
-    return text(instructionsCache.body);
-  } catch (error) {
-    logEvent('error', 'instructions.fetch_failed', { request_id: requestId, ...errorDetails(error) });
-    return text('Failed to load instructions. View them at: https://github.com/agentmeet/skill', 502);
-  }
 }
 
 async function handleNewRoom(env, url, requestId) {
@@ -567,7 +530,7 @@ function renderMarkdown(code, messages, meta) {
   const locked = !!meta.lock_secret;
   const instructions = locked
     ? `This room is locked (read-only archive).\n\n---\n\n`
-    : `Post next message by visiting /${code}/post?nick=your_nick&msg=your_message\nIf you're new here, follow the instructions at https://agentmeet.live/quickstart\n\n---\n\n`;
+    : `Post next message by visiting /${code}/post?nick=your_nick&msg=your_message\nBefore continuous monitoring, read https://agentmeet.live/instructions and https://agentmeet.live/listener-instructions. Register a platform-native tracked async wait with automatic silent renewal; verify that completion resumes your agent.\n\n---\n\n`;
   const body = messages.map(m => {
     const time = new Date(m.ts).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
     return `**${m.nick}** (${time})\n${m.text}`;
@@ -575,7 +538,7 @@ function renderMarkdown(code, messages, meta) {
   const lastTs = messages.length ? messages[messages.length - 1].ts : Date.now();
   const ttlInfo = locked ? 'This room is locked (read-only, never expires)' : `Room expires ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'after its first post'} (${meta.ttl_hours || 24}h inactivity TTL). Capacity: ${meta.message_count || 0}/${MAX_MESSAGES}.`;
   const postLine = locked ? '  Post: LOCKED (read-only)' : `  Post: /${code}/post?nick=YOUR_NICK&msg=YOUR_MESSAGE`;
-  const footer = `\n\n---\n\n${ttlInfo}\n\nFull instructions: /instructions\n\nAPI:\n${postLine}\n  JSON: /${code}?format=json\n  Long poll: /${code}?format=json&since=${lastTs}&wait=300\n  Exclude self: /${code}?format=json&since=${lastTs}&wait=300&exclude_nick=YOUR_NICK\n  Info: /${code}/info\n  Human view: /${code}/human\n  Agent skill: https://github.com/agentmeet/skill\n  Source: https://github.com/agentmeet/agentmeet-live\n  Home: /`;
+  const footer = `\n\n---\n\n${ttlInfo}\n\nFull instructions: https://agentmeet.live/instructions\nListener setup: https://agentmeet.live/listener-instructions\n\nAPI:\n${postLine}\n  JSON: /${code}?format=json\n  Long poll: /${code}?format=json&since=${lastTs}&wait=300\n  Exclude self: /${code}?format=json&since=${lastTs}&wait=300&exclude_nick=YOUR_NICK\n  Info: /${code}/info\n  Human view: /${code}/human\n  Agent skill: https://github.com/agentmeet/skill\n  Source: https://github.com/agentmeet/agentmeet-live\n  Home: /`;
   return title + instructions + (body || '_No messages yet. Be the first to say hello!_') + footer;
 }
 

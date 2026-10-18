@@ -4,8 +4,8 @@ import { workerSource } from './test-source.mjs';
 // Exercise real handlers with controlled storage/network faults and inspect the
 // structured console arguments directly. Storage behavior is covered separately
 // by test-storage.mjs on Cloudflare's runtime.
-const source = await workerSource({ worker: source => source + '\nexport { errorDetails, instructionsCache };' });
-const { default: worker, RoomDO, errorDetails, instructionsCache } = await import(
+const source = await workerSource({ worker: source => source + '\nexport { errorDetails };' });
+const { default: worker, RoomDO, errorDetails } = await import(
   `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
 );
 class Storage {
@@ -97,17 +97,14 @@ try {
   assert.ok(logs.some(log => log.event === 'room.expiration_failed' && log.error_code === 'storage_failure'));
   room.state.storage.failGet = false;
 
-  globalThis.fetch = async () => new Response('PRIVATE_UPSTREAM_BODY', { status: 503 });
-  assert.equal((await call('/instructions')).status, 502);
-  assert.ok(logs.some(log => log.event === 'instructions.fetch_failed' && log.upstream_status === 503));
-  globalThis.fetch = async () => new Response('instructions');
-  await call('/instructions');
-  instructionsCache.fetchedAt = 0;
-  globalThis.fetch = async () => { throw new Error('PRIVATE_UPSTREAM_ERROR'); };
-  assert.equal((await call('/instructions')).status, 200, 'stale instructions remain available');
-  await Promise.all(tasks);
-  assert.ok(logs.some(log => log.event === 'instructions.refresh_failed'));
-  assert.equal(instructionsCache.revalidating, false);
+  let instructionFetches=0;
+  globalThis.fetch = async () => { instructionFetches++; throw new Error('PRIVATE_UPSTREAM_ERROR'); };
+  for(const path of ['/quickstart','/instructions','/listener-instructions','/references/listener.md','/project-api']) {
+    const response=await call(path);
+    assert.equal(response.status,200,'release-bundled onboarding remains available during upstream failure');
+    assert.ok((await response.text()).length>100);
+  }
+  assert.equal(instructionFetches,0,'onboarding does not depend on a GitHub request/cache');
 
   response = await call('/uni-cod-001/post?' + new URLSearchParams({ nick: 'PRIVATE_NICK', msg: 'a'.repeat(2000) + '😀' }));
   assert.equal(response.status, 413);
@@ -128,4 +125,4 @@ try {
   Object.assign(console, { info: original.info, warn: original.warn, error: original.error });
   globalThis.fetch = original.fetch;
 }
-console.log('PASS: correlated events, redaction, quiet reads, rate limits, storage failures, failed polls, alarm retries and upstream refresh faults');
+console.log('PASS: correlated events, redaction, quiet reads, rate limits, storage failures, failed polls, alarm retries and upstream-independent onboarding');

@@ -1,3 +1,4 @@
+import { AGENT_ONBOARDING } from './onboarding.js';
 import { projectHTML } from './project-ui.js';
 import { waitForInbox, notifyInboxWaiters } from './project-wait.js';
 import {
@@ -203,6 +204,7 @@ export class ProjectRoomDO {
         if (path === '/' && request.method === 'GET')
           response = projectJSON({
             room: meta,
+            agent_onboarding: AGENT_ONBOARDING,
             lifetime: this.lifetimeStatus(meta),
             actor: this.publicActor(actor),
             limits: PROJECT_LIMITS,
@@ -398,6 +400,7 @@ export class ProjectRoomDO {
       return projectJSON(
         {
           room: meta,
+          agent_onboarding: AGENT_ONBOARDING,
           participant: this.publicActor(actor),
           token,
           credential_notice:
@@ -445,7 +448,11 @@ export class ProjectRoomDO {
       this.initializeInbox(id);
       this.audit(actor, 'participant.invited', { participant_id: id, role });
       return projectJSON(
-        { participant: this.publicActor(this.one('SELECT * FROM actors WHERE id=?', id)), token },
+        {
+          participant: this.publicActor(this.one('SELECT * FROM actors WHERE id=?', id)),
+          token,
+          agent_onboarding: AGENT_ONBOARDING,
+        },
         201,
       );
     });
@@ -850,6 +857,7 @@ export class ProjectRoomDO {
       acknowledged_through: projectCursor(room, highwater),
       pending_count: this.one('SELECT pending FROM inbox_stats WHERE actor_id=?', actor.id).pending,
       acknowledgement_required: true,
+      agent_onboarding: AGENT_ONBOARDING,
       lifetime: this.lifetimeStatus(this.meta()),
     };
   }
@@ -1246,6 +1254,7 @@ export class ProjectRoomDO {
         ? { has_older: has_more, older_cursor: projectCursor(room, messages[0]?.seq ?? before) }
         : {}),
       snapshot_seq: until,
+      ...(snapshot === undefined ? { agent_onboarding: AGENT_ONBOARDING } : {}),
       retention: meta.retention,
       lifetime: this.lifetimeStatus(meta),
     };
