@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node test-storage.mjs && node test-logging.mjs && node test-api.mjs && node test-project.mjs && node test-recovery.mjs",
+    "test": "node test-storage.mjs && node test-logging.mjs && node test-api.mjs && node test-project.mjs && node test-coordination.mjs && node test-recovery.mjs",
     "build": "node scripts/build-browser.mjs",
     "pretest": "npm run build",
     "test:browser": "playwright test",

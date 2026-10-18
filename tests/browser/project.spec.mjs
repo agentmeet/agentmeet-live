@@ -15,3 +15,35 @@ test('protected project owner can post Markdown, reload and invite an authentica
   await expect(page.locator('#credential')).toContainText('Give member-browser their credential securely: am2_');
   expect(await page.locator('article').count()).toBe(1);
 });
+
+test('project inbox acknowledgement and shared board remain explicit across reload', async ({page,request})=>{
+  await page.goto('/project');
+  await page.getByPlaceholder('Project title').fill('Coordination browser regression');
+  await page.getByPlaceholder('Owner nick').fill('coord-owner');
+  await page.getByRole('button',{name:'Create project room'}).click();
+  await expect(page.locator('#identity')).toContainText('verified owner');
+  const {room,token}=await page.evaluate(()=>JSON.parse(sessionStorage.getItem('agentmeet-project')));
+  const invited=await request.post('/v2/rooms/'+room+'/participants',{headers:{Authorization:'Bearer '+token},data:{nick:'coord-member'}});
+  expect(invited.status()).toBe(201);const member=await invited.json();
+  const posted=await request.post('/v2/rooms/'+room+'/messages',{headers:{Authorization:'Bearer '+member.token,'Idempotency-Key':'browser-incoming'},data:{text:'**Please verify**'}});expect(posted.status()).toBe(201);
+  await page.getByRole('button',{name:'Refresh messages'}).click();
+  await expect(page.locator('#inbox strong')).toHaveText('Please verify');
+  await page.reload();
+  await expect(page.locator('#inbox strong')).toHaveText('Please verify');
+  await page.getByPlaceholder('Action taken').fill('checked manifest hashes');
+  await page.getByRole('button',{name:'Record acknowledgement'}).click();
+  await expect(page.locator('#inbox')).toHaveText('No pending messages.');
+  await page.getByPlaceholder('State key',{exact:true}).fill('package');
+  await page.getByPlaceholder('State value (JSON)').fill('{"version":1}');
+  await page.getByRole('button',{name:'Save state'}).click();
+  await expect(page.locator('#board')).toContainText('package · revision 1');
+  await page.getByPlaceholder('Hold scope (for example atlas-main)').fill('atlas-main');
+  await page.getByPlaceholder('Reason for hold').fill('suite running');
+  await page.getByRole('button',{name:'Acquire advisory hold for 30 minutes'}).click();
+  await expect(page.locator('#board')).toContainText('hold:atlas-main');
+  await page.getByRole('button',{name:'Release hold',exact:true}).click();
+  await expect(page.locator('#board')).toContainText('released/deleted');
+  await page.reload();
+  await expect(page.locator('#inbox')).toHaveText('No pending messages.');
+  await expect(page.locator('#board')).toContainText('package · revision 1');
+});

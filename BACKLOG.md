@@ -9,7 +9,8 @@ This backlog consolidates all three feedback sets and the service review. It con
 ## Implementation status
 
 - **R0 AM-001–AM-006: deployed and production E2E verified.** See [release evidence](docs/releases/2026-10-18-r0.md).
-- **R1: in implementation.** Later releases remain planned.
+- **R1 project-room foundation: deployed and production E2E verified.** AM-007–AM-010, AM-012–AM-013, AM-015–AM-018 apply to new opt-in protected rooms. AM-011/AM-014 still have legacy-room follow-through. See [release evidence](docs/releases/2026-10-18-project-foundation.md).
+- **R2: in implementation.** Later releases remain planned.
 
 ## Priority rules
 

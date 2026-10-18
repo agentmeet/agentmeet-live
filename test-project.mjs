@@ -62,6 +62,9 @@ try {
   assert.equal(exported.length,207);
   const rotation=await call(root+'/participants/'+member.data.participant.id+'/rotate',member.data.token,'POST',{});
   assert.equal(rotation.status,200);
+  assert.equal((await call(root,member.data.token)).status,200,'preparing rotation keeps original credential usable');
+  assert.equal((await call(root,rotation.data.token)).status,401,'prepared credential is not active yet');
+  assert.equal((await call(root+rotation.data.confirm_path,member.data.token,'POST',{token:rotation.data.token})).status,200);
   assert.equal((await call(root,member.data.token)).status,401);
   assert.equal((await call(root,rotation.data.token)).status,200);
   assert.equal((await call(root+'/participants/'+member.data.participant.id+'/revoke',owner,'POST',{})).status,200);

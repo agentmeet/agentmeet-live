@@ -13,13 +13,19 @@ const [, room, ...parts]`);
 let mf;
 const start=()=>mf=new Miniflare(convertV4MiniflareOptions({ modules:true,script,compatibilityDate:'2024-12-01', resourcePersistencePath:live,
   durableObjects:{ROOMS:{className:'RoomDO',useSQLite:false},PROJECT_ROOMS:{className:'ProjectRoomDO',useSQLite:true}},log:new Log(LogLevel.NONE) }));
-const request=async(path,token,method='GET',body,key)=>{
-  const response=await mf.dispatchFetch('http://localhost/v2/rooms'+path,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json'}:{}),...(key?{'Idempotency-Key':key}:{})},...(body?{body:JSON.stringify(body)}:{})});return{status:response.status,data:await response.json()};
+const request=async(path,token,method='GET',body,key,revision)=>{
+  const response=await mf.dispatchFetch('http://localhost/v2/rooms'+path,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json'}:{}),...(key?{'Idempotency-Key':key}:{}),...(revision===undefined?{}:{'If-Match':'"'+revision+'"'})},...(body?{body:JSON.stringify(body)}:{})});return{status:response.status,data:await response.json()};
 };
 try{
   start();const creation=await request('',null,'POST',{nick:'recovery-owner'});assert.equal(creation.status,201);
   const root='/'+creation.data.room.id,token=creation.data.token;
   const sent=await request(root+'/messages',token,'POST',{text:'recover this message'},'recovery-message');assert.equal(sent.status,201);
+  const member=(await request(root+'/participants',token,'POST',{nick:'recovery-member'})).data;
+  const incoming=(await request(root+'/messages',member.token,'POST',{text:'owner please check'},'recovery-incoming')).data.message;
+  await request(root+'/ack',token,'POST',{message_ids:[incoming.id],action:'checked the evidence',outcome:'verified'},'recovery-ack');
+  await request(root+'/state/pin',token,'PUT',{value:{sha256:'a'.repeat(64)}},'recovery-state',0);
+  const coordination=(await request(root+'/export?section=coordination',token)).data;
+  const pending=(await request(root+'/inbox',member.token)).data;
   const before=(await request(root+'/export',token)).data;
   assert.deepEqual((await request(root+'/__rollback',token)).data.rows,[],'SQL transaction rolls back all writes');
   await mf.dispose();mf=null;
@@ -34,5 +40,9 @@ try{
   await rm(live,{recursive:true});await cp(backup,live,{recursive:true});
   start();assert.deepEqual((await request(root+'/export',token)).data,before,'snapshot recovery preserves protected owner and immutable history');
   assert.equal((await request(root+'/messages',token,'POST',{text:'recover this message'},'recovery-message')).data.message.id,sent.data.message.id,'snapshot preserves retry records');
+  assert.deepEqual((await request(root+'/export?section=coordination',token)).data,coordination);
+  assert.deepEqual((await request(root+'/inbox',member.token)).data,pending);
+  assert.equal((await request(root+'/inbox',token)).data.pending_count,0);
+  assert.equal((await request(root+'/state/pin',token)).data.entry.revision,1);
   console.log('PASS: SQLite restart, disk snapshot recovery, actor credentials, immutable IDs/checksums, idempotency and interrupted transaction rollback');
 }finally{if(mf)await mf.dispose();await rm(directory,{recursive:true,force:true});}

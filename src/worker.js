@@ -162,7 +162,7 @@ export default {
       const fields = { request_id: requestId, operation, status: response.status, duration_ms: Date.now() - started };
       if (response.status >= 400) {
         logEvent(response.status >= 500 ? 'error' : 'warn', 'request.rejected', fields);
-      } else if (['room.create', 'room.post', 'room.lock', 'room.unlock', 'room.rename'].includes(operation)) {
+      } else if (['room.create', 'room.post', 'room.lock', 'room.unlock', 'room.rename', 'project.write'].includes(operation)) {
         logEvent('info', 'request.completed', fields);
       } else if (operation !== 'room.poll' && fields.duration_ms >= 1000) {
         logEvent('warn', 'request.slow', fields);
@@ -173,7 +173,10 @@ export default {
         request_id: requestId, operation, status: 500,
         duration_ms: Date.now() - started, ...errorDetails(error),
       });
-      return withRequestId(text(`Internal server error. Reference: ${requestId}`, 500, { 'Cache-Control': 'no-store' }), requestId);
+      const failure = new URL(request.url).pathname.startsWith('/v2/')
+        ? json({ error: { code: 'internal_error', message: 'Project service failed' }, request_id: requestId }, 500)
+        : text(`Internal server error. Reference: ${requestId}`, 500, { 'Cache-Control': 'no-store' });
+      return withRequestId(failure, requestId);
     }
   },
 };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 const base=process.env.BASE||'https://agentmeet.live';
-async function call(path,token,method='GET',body,key){
- const response=await fetch(base+'/v2/rooms'+path,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{}),...(key?{'Idempotency-Key':key}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(20000)});
+async function call(path,token,method='GET',body,key,revision){
+ const response=await fetch(base+'/v2/rooms'+path,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{}),...(key?{'Idempotency-Key':key}:{}),...(revision===undefined?{}:{'If-Match':'"'+revision+'"'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(20000)});
  assert.match(response.headers.get('X-Request-ID')||'',/^[a-f0-9-]{36}$/);return{status:response.status,data:await response.json()};
 }
 const creation=await call('',null,'POST',{nick:'smoke-owner',title:'Isolated project API regression'});assert.equal(creation.status,201,JSON.stringify(creation));
@@ -15,7 +15,17 @@ assert.equal((await call(root+'/messages',token,'POST',{text:'conflict'},'produc
 const received=await call(root+'/messages?for='+invited.data.participant.id,invited.data.token);assert.equal(received.data.messages.length,1);assert.deepEqual(received.data.messages[0].data,body.data);
 assert.equal((await call(root+'/messages?cursor='+encodeURIComponent(received.data.next_cursor),token)).data.messages.length,0);
 const reply=await call(root+'/messages',invited.data.token,'POST',{text:'Verified inputs',kind:'VERIFIED',reply_to:sent.data.message.id},'production-reply');assert.equal(reply.status,201);
+const inbox=await call(root+'/inbox',token);assert.equal(inbox.data.pending_count,1);
+assert.equal((await call(root+'/inbox',token)).data.pending_count,1);
+assert.equal((await call(root+'/ack',token,'POST',{message_ids:[reply.data.message.id],action:'checked incoming verification evidence',outcome:'verified'},'production-ack')).status,200);
+assert.equal((await call(root+'/inbox',token)).data.pending_count,0);
+const state=await call(root+'/state/package',token,'PUT',{value:{sha256:'a'.repeat(64)}},'production-state',0);assert.equal(state.status,200);assert.equal(state.data.entry.revision,1);
+assert.equal((await call(root+'/state/package',token,'PUT',{value:'stale'},'production-stale',0)).status,412);
+const hold=await call(root+'/holds/main',invited.data.token,'POST',{reason:'production E2E validation',lease_until:Date.now()+60000},'production-hold');assert.equal(hold.status,200);
+assert.equal((await call(root+'/holds/main',token,'POST',{reason:'conflicting acquire',lease_until:Date.now()+60000},'production-conflict')).status,409);
+assert.equal((await call(root+'/holds/main/revoke',token,'POST',{reason:'E2E cleanup'},'production-revoke',hold.data.hold.revision)).status,200);
+const audit=await call(root+'/export?section=coordination',token);assert.ok(audit.data.records.some(r=>r.action==='messages.acknowledged'));assert.ok(audit.data.records.some(r=>r.action==='hold.revoke'));
 const exported=await call(root+'/export',token);assert.equal(exported.data.messages.length,2);assert.match(exported.data.checksum.value,/^[a-f0-9]{64}$/);assert.ok(!JSON.stringify(exported.data).includes(token));
 assert.equal((await call(root+'/participants/'+invited.data.participant.id+'/revoke',token,'POST',{})).status,200);
 assert.equal((await call(root,invited.data.token)).status,401);
-console.log('PASS project smoke: protected actors, large structured handoff, durable retry/conflict, sequence resume, reply, export and revocation ('+creation.data.room.id+')');
+console.log('PASS project smoke: protected actors, large structured handoff, durable retry/conflict, sequence resume, inbox/ack, shared state, advisory holds, coordination export and revocation ('+creation.data.room.id+')');
