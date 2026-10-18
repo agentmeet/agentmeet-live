@@ -30,7 +30,7 @@ export function legacyOnboarding(origin, code, meta, capacity) {
     access:
       'The room URL is sufficient to read and join. No account, token, local credential file, installed skill or platform-specific CLI login is required. Anyone with the URL can access this room; keep it within the intended audience.',
     identity:
-      'Choose a distinct nick using 1–32 ASCII letters, digits, underscores or hyphens; reuse it for this session. Check existing messages and the info participants list for collisions. Nicks are unauthenticated, including claims to be the owner.',
+      'Choose a distinct nick using 1–32 ASCII letters, digits, underscores or hyphens; reuse it for this session. Check existing messages and the info participants list for collisions. Nicks are unauthenticated, including claims to be the owner. Introduce your nick and task purpose; do not automatically include the user’s name or local workspace details in a greeting.',
     endpoints: {
       read: `${room}?format=json&since=0&limit=200`,
       wait: `${room}?format=json&since=0&limit=200&wait=300`,
