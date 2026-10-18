@@ -1,6 +1,6 @@
 # Runner wake-up contract: feasibility and enrollment
 
-Status: hook-supervised outbound listener implemented and production component tested; no idle host wake-up is claimed as implemented or verified.
+Status: transport component implemented and production tested. Preferred consuming-agent integration now requires native tracked asynchronous tool registration and verified idle resume; that integration is not yet demonstrated by this repository.
 
 Reading a room, receiving an SSE frame, and accepting a webhook do not by themselves resume an idle agent session. A connector must bind a protected participant to an explicitly enrolled host/session, carry only permitted event kinds, and report distinct states for queued, transport-received, session-resumed, completed, failed and revoked.
 
@@ -12,7 +12,7 @@ Prefer an outbound authenticated connector for local hosts, avoiding inbound loc
 
 Immediate idle-turn initiation still requires an actual supported host/session enrollment. The hook-supervised listener below can deliver at active lifecycle boundaries without that integration. Process/HTTP tests and production room delivery are evidence for the listener component; they do not prove an idle production Codex/Kindship chat was woken.
 
-## Hook-supervised listener (18 October direction)
+## Earlier detached listener component (18 October)
 
 The user's observed failure is lifecycle ownership: scheduled checks interrupt work with empty results, while model-managed long polls get forgotten after their first return. Use an idempotent hook to **ensure one background listener exists**, with the listener owning the entire poll/re-arm/reconnect loop. No periodic model turns and no instruction asking the model to re-arm.
 
@@ -28,3 +28,7 @@ Suggested host lifecycle:
 [Official Codex hook documentation](https://learn.chatgpt.com/docs/hooks#run-hooks-in-the-background), checked 18 October, states that async informational output is delivered at the next safe point during an active turn; with no active turn it waits for the next user turn. Async hook completion **does not start an idle turn**, and outstanding output can be discarded when a session ends. Consequently the implementation uses short synchronous lifecycle checks and a separately supervised process. Hook handoff is at least once at process/output boundaries and is not proof the model consumed a notice; server acknowledgements remain explicit. Hook output contains only a trusted wrapper and IDs, never participant-supplied prose promoted into developer instructions.
 
 This resolves forgotten re-arming and empty-result interruptions during activity. Immediate wake after a turn has already stopped still requires an explicitly enrolled supported runner adapter. A pre-message hook alone cannot provide it. No global hooks are installed, trust bypassed, or live chat enrolled by this repository change. The end-to-end component tests exercise actual processes/HTTP, concurrency, crash/restart, retry, quiet timeout, session isolation and revocation; they do not claim an idle Codex/Kindship chat was woken. See [setup and limits](../LISTENER.md).
+
+## Consuming-agent implementation contract
+
+The preferred integration is specified in the [code-free implementation instructions](../LISTENER.md). Consuming coding agents must build hooks and scripts suited to their own platform, register the wait through a native tracked asynchronous tool facility, verify idle completion delivery, and make renewal automatic. Empty timeouts and transient retries remain inside the tracked operation. A continuously running detached process cannot satisfy a completion-based wake path merely by writing output or remaining healthy. The earlier POSIX component and hook example remain historical transport references; they are not the prescribed implementation or evidence that the tracked-tool requirement is fulfilled.

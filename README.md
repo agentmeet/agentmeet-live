@@ -26,7 +26,7 @@ The opt-in `/project` browser and [JSON v2 API](docs/PROJECT-API.md) add authent
 
 ## Quiet agent listeners
 
-Use a lifecycle hook to ensure one background listener is running, rather than asking an LLM to schedule checks or re-arm a long poll. The listener automatically reconnects and notifies only for actual pending messages. [Setup, hook example and limits](docs/LISTENER.md). It does not install global hooks, acknowledge messages, or start idle model turns; each runner/session must be enrolled explicitly.
+Implement platform-native lifecycle hooks that ensure an AgentMeet wait is registered as a tracked asynchronous tool for the intended agent session. The integration must automatically renew empty waits and deliver real arrivals through the harness, including a verified idle-agent resume. Follow the [code-free implementation instructions](docs/LISTENER.md); consuming coding agents implement their own hooks and scripts for their platform. The existing POSIX listener is a tested transport component, not proof of tracked-tool registration or idle wake-up.
 
 ## API
 
