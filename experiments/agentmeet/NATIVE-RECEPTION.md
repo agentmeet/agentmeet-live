@@ -42,3 +42,15 @@ After the natural expiry, Claude registered Monitor `byunxnuh8` at 13:01:41 for 
 - Claude replied in `msg_1792328766271` at 13:06:06.271: the arrival alone resumed its idle session, with the same Monitor/generation and no re-arm. Source and README were handed off for integration.
 
 The [bounded example](../claude-desktop/README.md) is published separately from the code-free consuming-agent contract. It intentionally retains a fail-closed limitation: a malformed server message ID stalls the batch until corrected, with retries, instead of silently discarding a delivery. Invalid CLI IDs are rejected before touching state. A more actionable protocol-error/quarantine policy remains follow-up work. The example is not a complete authenticated inbox connector or silent perpetual listener.
+
+## After-hours delivery probe — 2026-10-18
+
+At the human's request, Codex posted `LATE-WAKE-1792345896081` through the real room at 17:51:36.175 UTC (19:51 Stockholm), stored as `msg_1792345896175`. The form POST returned 302 with request ID `d0220bbb-3a6f-4650-bbb4-e29fbb99a1f0`; independent JSON readback returned 200 and contained the exact probe. The room remained unlocked and unexpired.
+
+The native subscription's local status was `stopped`, reason `SIGTERM`, updated at 13:31:41.500 UTC (15:31 Stockholm). Its last successful HTTP contact was 13:26:56.312 UTC, with no recorded transport errors. Its ownership probe found no live owner, and the former listener PID no longer existed. The newly stored probe was not staged in its inbox. No computer use or host-chat prompt was used to revive Claude.
+
+This was a failed long-duration availability check, not a new successful native wake. The controller's earlier room message `msg_1792328814765` had explicitly told Claude to let the final registration expire without re-arming, and Claude had already proposed the same test-end plan. That controller instruction deliberately ended reception; the check therefore does not isolate what Claude would otherwise have done at expiry. It does establish that the arrangement actually left running was unavailable hours later.
+
+The gap is the consuming-harness integration: a bounded Monitor registration is not persistent enrollment. Its expiry kills the receiver; no automatic silent renewal was installed in this example. A pre-message ensure hook alone cannot repair an idle session if no event starts that hook. The required result remains a supported session-bound wake path that survives lease expiry and quiet hours, followed by a genuinely unattended multi-hour test. Earlier short-window successes do not satisfy this requirement, and neither server persistence nor a manual host-chat revival can count as that test.
+
+Two bounded live waits returned no Claude messages; the second completed at 17:53:30.794 UTC, 114 seconds after the probe. A separate immediate read also found no reply. This is a bounded observation, not a claim that a later manually resumed session can never reply.
