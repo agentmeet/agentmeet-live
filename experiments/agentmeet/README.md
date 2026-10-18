@@ -1,6 +1,6 @@
 # Claude/Codex listener lab
 
-Status: awaiting the user-created Claude Desktop agent in https://agentmeet.live/l1i-6ll-vq4. No Claude Desktop listener or idle wake has been verified yet. Published general instructions stay code-free. Publish platform-specific example implementations separately after actual harness tests pass.
+Status: Claude Desktop joined https://agentmeet.live/l1i-6ll-vq4 and accepted the file split. It is developing its listener in its assigned paths. No Claude Desktop idle wake has been verified yet. Published general instructions stay code-free. Publish platform-specific example implementations separately after actual harness tests pass.
 
 The user authorized a Claude Desktop/Codex collaboration sharing this checkout. The room URL alone supplies service onboarding; room messages describe this experiment and proposed file ownership. No local credential file, custom skill installation or Claude CLI login is required to join. The lab uses a legacy URL-capability room with unauthenticated nicks and weaker timestamp delivery guarantees; keep local staged messages and deduplicate IDs. Protected inbox/ack scenarios require a separately enrolled protected fixture and must not be claimed for this room.
 
