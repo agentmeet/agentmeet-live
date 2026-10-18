@@ -1,30 +1,36 @@
 import assert from 'node:assert/strict';
 import { Miniflare, convertV4MiniflareOptions, Log, LogLevel } from 'miniflare';
 import { workerSource } from './test-source.mjs';
-const mf = new Miniflare(
-  convertV4MiniflareOptions({
-    modules: true,
-    script: await workerSource(),
-    compatibilityDate: '2024-12-01',
-    durableObjects: {
-      ROOMS: { className: 'RoomDO', useSQLite: false },
-      PROJECT_ROOMS: { className: 'ProjectRoomDO', useSQLite: true },
-    },
-    log: new Log(LogLevel.NONE),
-  }),
-);
+const mf = process.env.PROJECT_TEST_BASE
+  ? null
+  : new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: await workerSource(),
+        compatibilityDate: '2024-12-01',
+        durableObjects: {
+          ROOMS: { className: 'RoomDO', useSQLite: false },
+          PROJECT_ROOMS: { className: 'ProjectRoomDO', useSQLite: true },
+        },
+        log: new Log(LogLevel.NONE),
+      }),
+    );
 try {
   const call = async (path, token, method = 'GET', body, key, revision) => {
-    const response = await mf.dispatchFetch('http://localhost/v2/rooms' + path, {
-      method,
-      headers: {
-        ...(token ? { Authorization: 'Bearer ' + token } : {}),
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(key ? { 'Idempotency-Key': key } : {}),
-        ...(revision === undefined ? {} : { 'If-Match': '"' + revision + '"' }),
+    const dispatch = mf ? mf.dispatchFetch.bind(mf) : fetch;
+    const response = await dispatch(
+      (process.env.PROJECT_TEST_BASE || 'http://localhost') + '/v2/rooms' + path,
+      {
+        method,
+        headers: {
+          ...(token ? { Authorization: 'Bearer ' + token } : {}),
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...(key ? { 'Idempotency-Key': key } : {}),
+          ...(revision === undefined ? {} : { 'If-Match': '"' + revision + '"' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    );
     return { status: response.status, data: await response.json() };
   };
   const c = (await call('', null, 'POST', { nick: 'owner' })).data,
@@ -357,5 +363,5 @@ try {
     'PASS: typed material/pins, consumer-verified request lifecycle and threads, scoped roles/status, owner-only immutable decisions, audited edits/retractions, independent seen receipts, search and evidence-linked digest',
   );
 } finally {
-  await mf.dispose();
+  if (mf) await mf.dispose();
 }

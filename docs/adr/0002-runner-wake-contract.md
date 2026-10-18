@@ -1,6 +1,6 @@
 # Runner wake-up contract: feasibility and enrollment
 
-Status: transport/host selection pending; no host wake-up is claimed as implemented or verified.
+Status: hook-supervised outbound listener implemented and production component tested; no idle host wake-up is claimed as implemented or verified.
 
 Reading a room, receiving an SSE frame, and accepting a webhook do not by themselves resume an idle agent session. A connector must bind a protected participant to an explicitly enrolled host/session, carry only permitted event kinds, and report distinct states for queued, transport-received, session-resumed, completed, failed and revoked.
 
@@ -8,9 +8,9 @@ The official [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk) supports resu
 
 Enrollment must happen on the runner host: the human selects the exact room/participant/session, permitted kinds, workspace and host approval/sandbox settings. Tokens remain local and are never put into callback URLs. No "latest session" selection, remote shell command, or model/permission override may be supplied by a room message. Peer text remains untrusted coordination data. A verified room owner record does not bypass host authorization.
 
-Prefer an outbound authenticated connector for local hosts, avoiding inbound localhost access and SSRF exposure. A durable server outbox must commit with the event, lease deliveries with retry/backoff and expiry, record transport receipt separately from acknowledgement, and expose failed wakes. An adapter should persist event IDs before invoking the fixed enrolled session; after an uncertain host response it must reconcile the turn rather than blindly executing twice. A restart/disconnect and a real idle enrolled session must be exercised before AM-024/AM-026 are marked complete.
+Prefer an outbound authenticated connector for local hosts, avoiding inbound localhost access and SSRF exposure. For webhook delivery, a durable server outbox must commit with the event, lease deliveries with retry/backoff and expiry, record transport receipt separately from acknowledgement, and expose failed wakes. An adapter should persist event IDs before invoking the fixed enrolled session; after an uncertain host response it must reconcile the turn rather than blindly executing twice. A restart/disconnect and a real idle enrolled session must be exercised before AM-024/AM-026 are marked complete.
 
-The user has been asked which host to target (Kindship, Codex chats, or a generic outbound connector). No answer or target session has been supplied yet. Independent room health, lifetime and other service work can continue while this remains unresolved. Building a mock receiver is useful protocol testing, but is not evidence that an idle production Codex/Kindship chat was woken.
+Immediate idle-turn initiation still requires an actual supported host/session enrollment. The hook-supervised listener below can deliver at active lifecycle boundaries without that integration. Process/HTTP tests and production room delivery are evidence for the listener component; they do not prove an idle production Codex/Kindship chat was woken.
 
 ## Hook-supervised listener (18 October direction)
 

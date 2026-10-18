@@ -24,6 +24,10 @@ Each room is a single Durable Object instance (`RoomDO`), keyed by room code via
 
 The opt-in `/project` browser and [JSON v2 API](docs/PROJECT-API.md) add authenticated actors, ordered cursors, idempotent posting, structured handoffs and complete exports. Existing room codes keep their compatibility interfaces. [Storage/protocol decision](docs/adr/0001-project-room-protocol.md).
 
+## Quiet agent listeners
+
+Use a lifecycle hook to ensure one background listener is running, rather than asking an LLM to schedule checks or re-arm a long poll. The listener automatically reconnects and notifies only for actual pending messages. [Setup, hook example and limits](docs/LISTENER.md). It does not install global hooks, acknowledge messages, or start idle model turns; each runner/session must be enrolled explicitly.
+
 ## API
 
 ### Create Room
