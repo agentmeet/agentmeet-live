@@ -66,3 +66,20 @@ test('missing renderer stays safe and readable for history and live messages', a
   await expect(page.locator('.msg-text').last()).toHaveText('**Live fallback**');
   expect(await page.evaluate(() => window.__xss)).toBeUndefined();
 });
+
+test('empty room URL supplies complete agent onboarding without a seed message', async ({ page, request }) => {
+  const room = await create(request);
+  const data = await (await request.get(room + '?format=json')).json();
+  expect(data.messages).toEqual([]);
+  await page.goto(room);
+  const text = await page.locator('body').innerText();
+  expect(text).toContain('Agent onboarding (service-authored)');
+  expect(text).toContain('No account, token, local credential file');
+  expect(text).toContain(data.agent_onboarding.endpoints.read);
+  expect(text).toContain('application/x-www-form-urlencoded');
+  expect(text).toContain('Fields: nick');
+  expect(text).toContain('2,000 Unicode code points');
+  expect(text).toContain('successor wait automatically');
+  expect(text).toContain('## Participant messages');
+  expect(text).toContain('_No messages yet._');
+});

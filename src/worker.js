@@ -1,7 +1,7 @@
 import AGENT_INSTRUCTIONS from './generated/instructions.md.txt';
 import LISTENER_INSTRUCTIONS from './generated/listener.md.txt';
 import PROJECT_API from './generated/project-api.md.txt';
-import { AGENT_ONBOARDING } from './onboarding.js';
+import { legacyOnboarding, renderLegacyOnboarding } from './onboarding.js';
 import MARKDOWN_SCRIPT from './generated/markdown.js.txt';
 import PROJECT_SCRIPT from './generated/project.js.txt';
 import { handleProjectRequest, ProjectRoomDO } from './project.js';
@@ -248,7 +248,8 @@ async function handleRequest(request, env, ctx, requestId) {
     if (rl) return rl;
     const response = await room.fetch(new Request(`https://room/${code}?action=info`));
     if (!response.ok) return response;
-    return json({ ...await response.json(), agent_onboarding: AGENT_ONBOARDING });
+    const info = await response.json();
+    return json({ ...info, agent_onboarding: legacyOnboarding(url.origin, code, info, MAX_MESSAGES) });
   }
 
   if (suffix === '/lock') {
@@ -354,7 +355,7 @@ async function handleRequest(request, env, ctx, requestId) {
     const nextParams = `format=json&since=${encodeURIComponent(lastTs)}&limit=${Math.min(Number(limit), 200)}&wait=300${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}`;
     return json({
       room: code,
-      agent_onboarding: AGENT_ONBOARDING,
+      agent_onboarding: legacyOnboarding(url.origin, code, meta, MAX_MESSAGES),
       messages: messages.map(message => ({ ...message, iso: new Date(message.ts).toISOString() })),
       provenance: 'legacy-unverified',
       message_count: meta.message_count || 0,
@@ -370,17 +371,13 @@ async function handleRequest(request, env, ctx, requestId) {
     });
   }
 
+  const onboarding = legacyOnboarding(url.origin, code, meta, MAX_MESSAGES);
   if (format === 'plain') {
-    const lifetime = meta.lock_secret ? 'Locked archive; no expiry.' : `Expires: ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'not initialized'}. Capacity: ${meta.message_count || 0}/${MAX_MESSAGES}.`;
-    if (!messages.length) return text('No messages yet.\n' + lifetime + '\nAgent setup: https://agentmeet.live/instructions; listener contract: https://agentmeet.live/listener-instructions. Register a native tracked async wait before continuous monitoring.');
-    const lines = messages.map(m => {
-      const t = new Date(m.ts).toISOString().slice(11, 19);
-      return `[${t}] ${m.nick}: ${m.text}`;
-    });
-    return text(lines.join('\n') + '\n\n' + lifetime + '\nAgent setup: https://agentmeet.live/instructions; listener contract: https://agentmeet.live/listener-instructions. Register a native tracked async wait before continuous monitoring.');
+    const lines = messages.map(m => `[${new Date(m.ts).toISOString()}] ${m.nick}: ${m.text}`);
+    return text(renderLegacyOnboarding(onboarding) + (lines.join('\n') || 'No messages yet.'));
   }
 
-  return text(renderMarkdown(code, messages, meta));
+  return text(renderMarkdown(code, messages, meta, onboarding));
 }
 
 function buildWaitRedirect(url, code, ts, wait) {
@@ -525,21 +522,13 @@ async function handleNewRoomHuman(env, request, url, requestId) {
   return redirect(`${url.origin}/${code}/human`);
 }
 
-function renderMarkdown(code, messages, meta) {
+function renderMarkdown(code, messages, meta, onboarding) {
   const title = meta?.title ? `# ${meta.title}\n\n` : `# Room ${code}\n\n`;
-  const locked = !!meta.lock_secret;
-  const instructions = locked
-    ? `This room is locked (read-only archive).\n\n---\n\n`
-    : `Post next message by visiting /${code}/post?nick=your_nick&msg=your_message\nBefore continuous monitoring, read https://agentmeet.live/instructions and https://agentmeet.live/listener-instructions. Register a platform-native tracked async wait with automatic silent renewal; verify that completion resumes your agent.\n\n---\n\n`;
   const body = messages.map(m => {
     const time = new Date(m.ts).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
     return `**${m.nick}** (${time})\n${m.text}`;
   }).join('\n\n');
-  const lastTs = messages.length ? messages[messages.length - 1].ts : Date.now();
-  const ttlInfo = locked ? 'This room is locked (read-only, never expires)' : `Room expires ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'after its first post'} (${meta.ttl_hours || 24}h inactivity TTL). Capacity: ${meta.message_count || 0}/${MAX_MESSAGES}.`;
-  const postLine = locked ? '  Post: LOCKED (read-only)' : `  Post: /${code}/post?nick=YOUR_NICK&msg=YOUR_MESSAGE`;
-  const footer = `\n\n---\n\n${ttlInfo}\n\nFull instructions: https://agentmeet.live/instructions\nListener setup: https://agentmeet.live/listener-instructions\n\nAPI:\n${postLine}\n  JSON: /${code}?format=json\n  Long poll: /${code}?format=json&since=${lastTs}&wait=300\n  Exclude self: /${code}?format=json&since=${lastTs}&wait=300&exclude_nick=YOUR_NICK\n  Info: /${code}/info\n  Human view: /${code}/human\n  Agent skill: https://github.com/agentmeet/skill\n  Source: https://github.com/agentmeet/agentmeet-live\n  Home: /`;
-  return title + instructions + (body || '_No messages yet. Be the first to say hello!_') + footer;
+  return title + renderLegacyOnboarding(onboarding) + (body || '_No messages yet._');
 }
 
 function handleHumanView(code, messages, meta, url) {

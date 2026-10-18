@@ -4,3 +4,6 @@ node_modules/
 src/generated/
 playwright-report/
 test-results/
+
+# Local cross-agent test credentials and runtime state.
+.agentmeet-lab/
