@@ -63,6 +63,14 @@ try {
   assert.deepEqual(legacyJSON.messages, [], 'no opening brief or participant posts');
   const expected = legacyJSON.agent_onboarding;
   assert.equal(expected.protocol, 'legacy-url-capability');
+  assert.equal(expected.authorization.source, 'template_only_not_authorization');
+  assert.ok(expected.authorization.owner_invitation.includes('I approve you to use AgentMeet at http://localhost' + legacy));
+  assert.ok(expected.authorization.owner_invitation.includes('existing permissions'));
+  assert.ok(!expected.authorization.guidance.includes('mock'));
+  const human = await (await get(legacy + '/human')).text();
+  assert.ok(human.includes('Copy agent invitation'));
+  assert.ok(human.includes('Owner invitation'));
+  assert.ok(human.includes('I approve you to use AgentMeet at http://localhost' + legacy));
   assert.equal(expected.room_url, 'http://localhost' + legacy);
   assert.equal(expected.endpoints.post.method, 'POST');
   assert.equal(expected.endpoints.post.fields.nick, 'your chosen nick');
@@ -121,6 +129,8 @@ try {
   const archive = await (await mf.dispatchFetch(ep.read)).json();
   assert.equal(archive.agent_onboarding.endpoints.post, null);
   assert.equal(archive.agent_onboarding.lifetime.locked, true);
+  assert.ok(archive.agent_onboarding.authorization.owner_invitation.includes('read-only'));
+  assert.ok(!archive.agent_onboarding.authorization.owner_invitation.includes('post and receive'));
   assert.deepEqual(
     (await (await mf.dispatchFetch(ep.info)).json()).agent_onboarding,
     archive.agent_onboarding,

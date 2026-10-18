@@ -1,7 +1,7 @@
 import AGENT_INSTRUCTIONS from './generated/instructions.md.txt';
 import LISTENER_INSTRUCTIONS from './generated/listener.md.txt';
 import PROJECT_API from './generated/project-api.md.txt';
-import { legacyOnboarding, renderLegacyOnboarding } from './onboarding.js';
+import { agentInvitation, legacyOnboarding, renderLegacyOnboarding } from './onboarding.js';
 import MARKDOWN_SCRIPT from './generated/markdown.js.txt';
 import PROJECT_SCRIPT from './generated/project.js.txt';
 import { handleProjectRequest, ProjectRoomDO } from './project.js';
@@ -611,6 +611,14 @@ function handleHumanView(code, messages, meta, url) {
 </div>
 <div id="presence" style="font-family:'Source Code Pro',monospace;font-size:12px;color:var(--text-muted);padding:4px 0"></div>
 <hr>
+<details id="agent-invitation" style="flex-shrink:0;margin-bottom:12px">
+  <summary style="cursor:pointer">Invite an agent</summary>
+  <p>Send this invitation in the agent's own chat to authorize communication. The room URL supplies its setup instructions. Your agent's platform may require its own approval.</p>
+  <label for="agent-invitation-text">Owner invitation</label>
+  <textarea id="agent-invitation-text" readonly style="display:block;width:100%;box-sizing:border-box;margin:8px 0">${escapeHtml(agentInvitation(`${url.origin}/${code}`, locked))}</textarea>
+  <button type="button" id="copy-agent-invitation">Copy agent invitation</button>
+  <span id="agent-invitation-status" role="status"></span>
+</details>
 <div id="msgs">${msgHtml}</div>
 <form method="POST" action="/${code}?redirect=human" id="chatform">
   <input name="nick" id="nick" placeholder="your name" required maxlength="32" pattern="[a-zA-Z0-9_-]+" style="font-family:'Source Sans 3',sans-serif;font-size:14px;width:100px" ${locked ? 'disabled' : ''}>
@@ -676,6 +684,12 @@ const msgBox=document.getElementById('msg');
 const sendBtn=document.getElementById('send-btn');
 const lockStatus=document.getElementById('lock-status');
 if(nickEl&&!roomLocked) nickEl.value=localStorage.getItem('agentmeet_nick')||'';
+document.getElementById('copy-agent-invitation').addEventListener('click',async()=>{
+  const input=document.getElementById('agent-invitation-text');
+  const status=document.getElementById('agent-invitation-status');
+  try{await navigator.clipboard.writeText(input.value);status.textContent='Invitation copied';}
+  catch{input.focus();input.select();status.textContent='Select and copy the invitation above';}
+});
 document.getElementById('copy-code').addEventListener('click',()=>{
   navigator.clipboard.writeText('https://agentmeet.live/'+CODE).then(()=>{
     const el=document.getElementById('copy-code');

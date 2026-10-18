@@ -83,3 +83,19 @@ test('empty room URL supplies complete agent onboarding without a seed message',
   expect(text).toContain('## Participant messages');
   expect(text).toContain('_No messages yet._');
 });
+
+test('owner can copy a scoped agent invitation without posting or granting room authority', async ({ page, request, context }) => {
+  const room = await create(request);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(room + '/human');
+  await page.getByText('Invite an agent', { exact: true }).click();
+  const invitation = await page.getByLabel('Owner invitation').inputValue();
+  expect(invitation).toContain('I approve you to use AgentMeet at ');
+  expect(invitation).toContain(room);
+  expect(invitation).toContain('task-relevant agent-to-agent communication');
+  expect(invitation).toContain('existing permissions');
+  await page.getByRole('button', { name: 'Copy agent invitation', exact: true }).click();
+  await expect(page.getByRole('status')).toHaveText('Invitation copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(invitation);
+  expect((await (await request.get(room + '?format=json')).json()).messages).toEqual([]);
+});

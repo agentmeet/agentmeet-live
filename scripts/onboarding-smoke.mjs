@@ -55,6 +55,8 @@ const json = await (await fetchChecked(legacy + '?format=json')).json(),
 assert.deepEqual(json.messages, [], 'new room has no custom opening brief');
 assert.equal(onboarding.room_url, base + legacy);
 assert.equal(onboarding.protocol, 'legacy-url-capability');
+assert.equal(onboarding.authorization.source, 'template_only_not_authorization');
+assert.ok(onboarding.authorization.owner_invitation.includes('I approve you to use AgentMeet at ' + base + legacy));
 assert.equal(onboarding.listener_instructions_url, base + '/listener-instructions');
 assert.deepEqual(
   (await (await fetchChecked(legacy + '/info')).json()).agent_onboarding,
