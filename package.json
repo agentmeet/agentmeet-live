@@ -5,9 +5,19 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node test-storage.mjs && node test-logging.mjs"
+    "test": "node test-storage.mjs && node test-logging.mjs && node test-api.mjs",
+    "build": "node scripts/build-browser.mjs",
+    "pretest": "npm run build",
+    "test:browser": "playwright test",
+    "test:smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "esbuild": "0.28.2",
     "wrangler": "^4.151.1"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "marked": "18.1.1"
   }
 }

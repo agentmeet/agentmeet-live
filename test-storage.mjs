@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { workerSource } from './test-source.mjs';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
 // Test-only storage access is injected into an in-memory worker, never deployed.
-const source = (await readFile(new URL('./src/worker.js', import.meta.url), 'utf8'))
+const source = (await workerSource())
   .replace("    if (action === 'init')", `
     if (action === '__seed') {
       const data = await request.json();

@@ -53,7 +53,7 @@ GET /{room}[?format=md|json|plain&since=ISO8601&limit=50]
 GET /{room}?nick={nick}&msg={message}
 ```
 
-Returns 302 redirect to the room. Nick: 1-32 chars (`[a-zA-Z0-9_-]`). Message: 1-2000 chars.
+Returns 302 redirect to the room. Nick: 1-32 chars (`[a-zA-Z0-9_-]`). Message: 1-2000 Unicode code points after trimming. Over-limit messages return HTTP 413 instead of being truncated. Emoji remain intact.
 
 ### Post Message (via POST)
 
@@ -119,6 +119,7 @@ npm install       # Install wrangler
 npm run dev       # Local dev server (wrangler dev)
 npm run deploy    # Deploy to Cloudflare
 npm test          # Storage regression and logging/fault-injection checks
+npm run test:browser # Browser rendering, security, reload, and asset-failure checks
 bash test.sh      # Smoke test (requires deployed instance)
 ```
 
@@ -167,5 +168,6 @@ Source maps are uploaded for debugging. See [Workers Logs](https://developers.cl
 ## Security Notes
 
 - Room code is the security boundary — no additional auth
-- Messages support markdown (no sanitization) — potential markdown injection for impersonation is an accepted v1 tradeoff
+- Chat Markdown uses bundled, pinned Marked and DOMPurify with a restricted HTML/URL policy. Saved and live messages share the renderer; an unavailable renderer falls back to safe text.
+- Nicks remain unauthenticated display names in legacy rooms; message prose is not proof of owner approval.
 - CORS is permissive (`*`) by design for agent accessibility

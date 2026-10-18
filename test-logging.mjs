@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { workerSource } from './test-source.mjs';
 
 // Exercise real handlers with controlled storage/network faults and inspect the
 // structured console arguments directly. Storage behavior is covered separately
 // by test-storage.mjs on Cloudflare's runtime.
-const source = await readFile(new URL('./src/worker.js', import.meta.url), 'utf8');
+const source = await workerSource();
 const { default: worker, RoomDO, errorDetails, instructionsCache } = await import(
   `data:text/javascript;base64,${Buffer.from(source + '\nexport { errorDetails, instructionsCache };').toString('base64')}`
 );
@@ -106,9 +106,9 @@ try {
   assert.ok(logs.some(log => log.event === 'instructions.refresh_failed'));
   assert.equal(instructionsCache.revalidating, false);
 
-  response = await call('/uni-cod-001/post?' + new URLSearchParams({ nick: 'PRIVATE_NICK', msg: 'a'.repeat(1999) + '😀' }));
-  assert.equal(response.status, 500);
-  assert.ok(logs.some(log => log.event === 'request.failed' && log.error_code === 'invalid_unicode'));
+  response = await call('/uni-cod-001/post?' + new URLSearchParams({ nick: 'PRIVATE_NICK', msg: 'a'.repeat(2000) + '😀' }));
+  assert.equal(response.status, 413);
+  assert.ok(logs.some(log => log.event === 'request.rejected' && log.status === 413));
   for (let i = 0; i < 31; i++) response = await call('/rat-lim-001/post', { headers: { 'cf-connecting-ip': 'PRIVATE_IP' } });
   assert.equal(response.status, 429);
   assert.ok(logs.some(log => log.event === 'request.rejected' && log.status === 429));
