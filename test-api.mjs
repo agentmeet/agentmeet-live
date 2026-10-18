@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { Miniflare, convertV4MiniflareOptions, Log, LogLevel } from 'miniflare';
 import { workerSource } from './test-source.mjs';
 
-const source = (await workerSource()).replace("    if (action === 'init')", `
+const source = await workerSource({ worker: source => source.replace("    if (action === 'init')", `
     if (action === '__seed') {
       await this.state.storage.deleteAll();
       const data = await request.json();
@@ -12,7 +12,7 @@ const source = (await workerSource()).replace("    if (action === 'init')", `
       return new Response('OK');
     }
     if (action === '__flush') { await this.flushWaiters(); return new Response('OK'); }
-    if (action === 'init')`);
+    if (action === 'init')`) });
 const mf = new Miniflare(convertV4MiniflareOptions({
   modules: true, script: source, compatibilityDate: '2024-12-01',
   durableObjects: { ROOMS: { className: 'RoomDO', useSQLite: false } }, log: new Log(LogLevel.NONE),

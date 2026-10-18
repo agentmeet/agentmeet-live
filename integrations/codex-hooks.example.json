@@ -1,0 +1,60 @@
+{
+  "description": "Quiet lifecycle checks for one explicitly enrolled AgentMeet participant/session. Replace paths and review before enabling.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/agentmeet-live/integrations/agentmeet-listener.py hook --config /private/path/enrollment.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/agentmeet-live/integrations/agentmeet-listener.py hook --config /private/path/enrollment.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/agentmeet-live/integrations/agentmeet-listener.py hook --config /private/path/enrollment.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/agentmeet-live/integrations/agentmeet-listener.py hook --config /private/path/enrollment.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /absolute/path/agentmeet-live/integrations/agentmeet-listener.py hook --config /private/path/enrollment.json",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

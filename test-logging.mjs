@@ -4,9 +4,9 @@ import { workerSource } from './test-source.mjs';
 // Exercise real handlers with controlled storage/network faults and inspect the
 // structured console arguments directly. Storage behavior is covered separately
 // by test-storage.mjs on Cloudflare's runtime.
-const source = await workerSource();
+const source = await workerSource({ worker: source => source + '\nexport { errorDetails, instructionsCache };' });
 const { default: worker, RoomDO, errorDetails, instructionsCache } = await import(
-  `data:text/javascript;base64,${Buffer.from(source + '\nexport { errorDetails, instructionsCache };').toString('base64')}`
+  `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
 );
 class Storage {
   values = new Map();

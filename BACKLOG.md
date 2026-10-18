@@ -12,7 +12,8 @@ This backlog consolidates all three feedback sets and the service review. It con
 - **R1 project-room foundation: deployed and production E2E verified.** AM-007–AM-010, AM-012–AM-013, AM-015–AM-018 apply to new opt-in protected rooms. AM-011/AM-014 legacy follow-through is now deployed within the documented filtering/migration limits. See [release evidence](docs/releases/2026-10-18-project-foundation.md).
 - **R2 AM-019–AM-023: deployed and production E2E verified** for protected project rooms. See [release evidence](docs/releases/2026-10-18-coordination.md). Filtered wait/stream transports follow separately.
 - **Legacy AM-011/AM-014 follow-through: deployed and production E2E verified.** [Evidence and limits](docs/releases/2026-10-18-legacy-storage.md).
-- **Room health/lifetime: in implementation.** Wake integration AM-024–AM-026 awaits an enrolled host choice; [feasibility contract](docs/adr/0002-runner-wake-contract.md). Other later work remains planned.
+- **Room health/lifetime: deployed and production E2E verified.** AM-028, AM-031 and AM-032 apply to protected project rooms; AM-027 listener/wake observations remain partial. AM-029 is reproduced at the Cloudflare edge; changing that policy requires zone access. See [evidence](docs/releases/2026-10-18-health-lifetime.md).
+- **Hook-supervised listener: local implementation.** The user selected automatic lifecycle repair instead of model-managed re-arming. A quiet singleton/notification queue is under test; immediate idle wake AM-024–AM-026 still requires an enrolled supported host. No live chat has been enrolled; [feasibility contract](docs/adr/0002-runner-wake-contract.md). Other later work remains planned.
 
 ## Priority rules
 

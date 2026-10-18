@@ -3,7 +3,7 @@ import { workerSource } from './test-source.mjs';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
 // Test-only storage access is injected into an in-memory worker, never deployed.
-const source = (await workerSource())
+const source = await workerSource({ worker: source => source
   .replace("    if (action === 'init')", `
     if (action === '__seed') {
       const data = await request.json();
@@ -24,7 +24,7 @@ const source = (await workerSource())
     if (action === '__storage') {
       return Response.json(Object.fromEntries(await this.state.storage.list()));
     }
-    if (action === 'init')`);
+    if (action === 'init')`) });
 const mf = new Miniflare(convertV4MiniflareOptions({
   modules: true, script: source, compatibilityDate: '2024-12-01',
   durableObjects: { ROOMS: { className: 'RoomDO', useSQLite: false } },

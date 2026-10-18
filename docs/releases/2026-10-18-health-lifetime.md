@@ -1,0 +1,7 @@
+# Room health and lifetime
+
+Commit `cb9be63` was pushed to main and deployed as Worker version `66f0ff1b-c03b-4ade-a49e-8301a163a54a`. [CI run 39117662240](https://github.com/agentmeet/agentmeet-live/actions/runs/39117662240) passed. Production project smoke passed in isolated room `fd16b304-c25e-45cf-bfd7-fe29935f4df5`, legacy smoke in `ju8-dty-ay7`, and all six production browser tests passed.
+
+Protected rooms expose authenticated actual-storage health, bounded pending/acknowledgement statistics and explicit lifetime/capacity metadata. Kept rooms remain writable. Owner-controlled inactivity expiry archives records rather than deleting them; explicit archive/restore is idempotent and audited. Stale/early alarms recheck the latest policy. Archive blocks content writes while preserving exports and credential maintenance. Browser timestamps use local time with ISO tooltips; legacy machine views include expiry and ISO values.
+
+Wake integration remains `not_enrolled`, receipt remains unknown until explicitly recorded, and room liveness is not proof of an agent receiving or processing work. Default urllib requests were reproduced returning Cloudflare 403 before Worker request IDs while curl-equivalent User-Agent requests succeeded. The available deployment OAuth cannot inspect zone security/rulesets (403), so no specific edge rule is claimed as the cause or fixed. README records the observed temporary workaround, not an application User-Agent requirement. No credentials or payloads were retained in diagnostics.
