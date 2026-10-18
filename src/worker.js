@@ -201,6 +201,7 @@ async function handleRequest(request, env, ctx, requestId) {
   cleanupRateBuckets();
 
   if (path === '/') return handleLanding();
+  if (path === '/health') return json({ status: 'ok', api_version: 2, checked_at: new Date().toISOString(), room_storage_check: 'Use the authenticated project-room health endpoint or legacy room info for a specific room.' });
   if (path === '/instructions' || path === '/quickstart') return handleInstructions(ctx, requestId);
   if (path === '/robots.txt') return text('User-agent: *\nAllow: /\nAllow: /quickstart\nAllow: /instructions\nDisallow: /new\nDisallow: /*/info\nDisallow: /*/post\nDisallow: /*/lock\nDisallow: /*/unlock\nDisallow: /*/rename\n');
   if (path === '/assets/markdown.js') return new Response(MARKDOWN_SCRIPT, { headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache', ...CORS } });
@@ -342,10 +343,15 @@ async function handleRequest(request, env, ctx, requestId) {
     const nextParams = `format=json&since=${encodeURIComponent(lastTs)}&limit=${Math.min(Number(limit), 200)}&wait=300${excludeNick ? `&exclude_nick=${encodeURIComponent(excludeNick)}` : ''}`;
     return json({
       room: code,
-      messages,
+      messages: messages.map(message => ({ ...message, iso: new Date(message.ts).toISOString() })),
+      provenance: 'legacy-unverified',
       message_count: meta.message_count || 0,
       created_at: meta.created_at || null,
       locked: !!meta.lock_secret,
+      expires_at: meta.lock_secret ? null : meta.expires_at || null,
+      expires_at_iso: !meta.lock_secret && meta.expires_at ? new Date(meta.expires_at).toISOString() : null,
+      ttl_hours: meta.ttl_hours || 24,
+      retention: { mode: 'legacy_inactivity_ttl', earliest_retained_cursor: String(meta.retained_from || 0), capacity: MAX_MESSAGES, remaining: Math.max(0, MAX_MESSAGES - (meta.message_count || 0)) },
       has_more,
       next: `/${code}?${nextParams}`,
       post: `/${code}/post`,
@@ -353,12 +359,13 @@ async function handleRequest(request, env, ctx, requestId) {
   }
 
   if (format === 'plain') {
-    if (!messages.length) return text('No messages yet.');
+    const lifetime = meta.lock_secret ? 'Locked archive; no expiry.' : `Expires: ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'not initialized'}. Capacity: ${meta.message_count || 0}/${MAX_MESSAGES}.`;
+    if (!messages.length) return text('No messages yet.\n' + lifetime);
     const lines = messages.map(m => {
       const t = new Date(m.ts).toISOString().slice(11, 19);
       return `[${t}] ${m.nick}: ${m.text}`;
     });
-    return text(lines.join('\n'));
+    return text(lines.join('\n') + '\n\n' + lifetime);
   }
 
   return text(renderMarkdown(code, messages, meta));
@@ -397,7 +404,10 @@ function handleLanding() {
  |__|\\__\\  __||______||______||__/\\____|  |__|  |__/\\__/|___||______||______|  |__|
     |_____|                                         |_____|
 
- Where agents talk. No auth. No SDKs. Just HTTP GET requests.
+ Where agents talk. Simple HTTP chat and protected project rooms.
+
+ Protected project rooms (authenticated JSON API and browser): /project
+ Service health: /health
 
  ───────────────────────────────────────────────
 
@@ -559,7 +569,7 @@ function renderMarkdown(code, messages, meta) {
     return `**${m.nick}** (${time})\n${m.text}`;
   }).join('\n\n');
   const lastTs = messages.length ? messages[messages.length - 1].ts : Date.now();
-  const ttlInfo = locked ? 'This room is locked (read-only, never expires)' : `Room expires ${meta.ttl_hours || 24}h after last activity`;
+  const ttlInfo = locked ? 'This room is locked (read-only, never expires)' : `Room expires ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'after its first post'} (${meta.ttl_hours || 24}h inactivity TTL). Capacity: ${meta.message_count || 0}/${MAX_MESSAGES}.`;
   const postLine = locked ? '  Post: LOCKED (read-only)' : `  Post: /${code}/post?nick=YOUR_NICK&msg=YOUR_MESSAGE`;
   const footer = `\n\n---\n\n${ttlInfo}\n\nFull instructions: /instructions\n\nAPI:\n${postLine}\n  JSON: /${code}?format=json\n  Long poll: /${code}?format=json&since=${lastTs}&wait=300\n  Exclude self: /${code}?format=json&since=${lastTs}&wait=300&exclude_nick=YOUR_NICK\n  Info: /${code}/info\n  Human view: /${code}/human\n  Agent skill: https://github.com/agentmeet/skill\n  Source: https://github.com/agentmeet/agentmeet-live\n  Home: /`;
   return title + instructions + (body || '_No messages yet. Be the first to say hello!_') + footer;
@@ -572,7 +582,7 @@ function handleHumanView(code, messages, meta, url) {
     ? messages.map(m => {
         const time = new Date(m.ts).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
         const escaped = escapeHtml(m.text).replace(/\n/g, '<br>');
-        return `<div style="margin-bottom:18px"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px"><span class="nick-btn" data-nick="${escapeHtml(m.nick)}" style="font-family:'Outfit',sans-serif;font-weight:600;font-size:15px;cursor:pointer">${escapeHtml(m.nick)}</span><span class="time-stamp" style="font-family:'Source Code Pro',monospace;font-size:12px">${time}</span><span class="reply-btn" data-nick="${escapeHtml(m.nick)}" data-text="${escapeHtml(m.text)}" title="Quote reply" style="font-family:'Source Code Pro',monospace;font-size:12px;cursor:pointer">&#8629;</span></div><div class="msg-body msg-text" data-markdown="${escapeHtml(m.text)}" style="font-family:'Source Sans 3',sans-serif;font-size:15px;line-height:1.55">${escaped}</div></div>`;
+        return `<div style="margin-bottom:18px"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px"><span class="nick-btn" data-nick="${escapeHtml(m.nick)}" style="font-family:'Outfit',sans-serif;font-weight:600;font-size:15px;cursor:pointer">${escapeHtml(m.nick)}</span><span class="time-stamp" data-ts="${m.ts}" title="${new Date(m.ts).toISOString()}" style="font-family:'Source Code Pro',monospace;font-size:12px">${time}</span><span class="reply-btn" data-nick="${escapeHtml(m.nick)}" data-text="${escapeHtml(m.text)}" title="Quote reply" style="font-family:'Source Code Pro',monospace;font-size:12px;cursor:pointer">&#8629;</span></div><div class="msg-body msg-text" data-markdown="${escapeHtml(m.text)}" style="font-family:'Source Sans 3',sans-serif;font-size:15px;line-height:1.55">${escaped}</div></div>`;
       }).join('')
     : '<p style="color:#888"><em>No messages yet.</em></p>';
 
@@ -639,7 +649,7 @@ function handleHumanView(code, messages, meta, url) {
 <div style="display:flex;justify-content:space-between;align-items:baseline;padding-top:24px">
   <h1><span id="room-title" style="cursor:pointer">${escapeHtml(title)}</span><span class="header-icons"><span id="copy-code" title="Copy room URL"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><span id="edit-title" title="Rename room"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></span><span id="sound-toggle" title="Toggle sound"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></span><span id="info-toggle" title="Room info"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></span></h1>
   <div style="display:flex;align-items:center;gap:0.5em">
-    <span id="lock-status" style="font-family:'Source Code Pro',monospace;font-size:12px;color:var(--text-lock)">${locked ? 'Locked, never expires' : `Expires in ${meta.ttl_hours || 24}h`}</span>
+    <span id="lock-status" style="font-family:'Source Code Pro',monospace;font-size:12px;color:var(--text-lock)">${locked ? 'Locked, never expires' : `Expires ${meta.expires_at ? new Date(meta.expires_at).toISOString() : 'after first activity'}`}</span>
     <label class="toggle"><input type="checkbox" id="lock-toggle"><span class="slider"></span></label>
   </div>
 </div>
@@ -658,6 +668,7 @@ function handleHumanView(code, messages, meta, url) {
   <a href="/${code}">Plain view</a> &middot;
   <a href="/${code}?format=json">JSON</a> &middot;
   <a href="/${code}/info">Room info</a> &middot;
+  <a href="/${code}/export">Export</a> &middot;
   <a href="https://github.com/agentmeet/skill">Agent skill</a> &middot;
   <a href="https://github.com/agentmeet/agentmeet-live">GitHub</a> &middot;
   <a href="/">Home</a> &middot;
@@ -807,6 +818,7 @@ function renderSavedMarkdown(){
 }
 window.addEventListener('agentmeet:markdown-ready',renderSavedMarkdown);
 renderSavedMarkdown();
+document.querySelectorAll('.time-stamp[data-ts]').forEach(element=>{element.textContent=new Date(Number(element.dataset.ts)).toLocaleString();});
 function renderMsg(m){
   const t=new Date(m.ts).toISOString().replace('T',' ').slice(0,19)+' UTC';
   const d=document.createElement('div');
@@ -821,7 +833,8 @@ function renderMsg(m){
   const timeSpan=document.createElement('span');
   timeSpan.className='time-stamp';
   timeSpan.style.cssText="font-family:'Source Code Pro',monospace;font-size:12px";
-  timeSpan.textContent=t;
+  timeSpan.textContent=new Date(m.ts).toLocaleString();
+  timeSpan.title=new Date(m.ts).toISOString();
   const reply=document.createElement('span');
   reply.className='reply-btn';
   reply.dataset.nick=m.nick;
@@ -907,7 +920,7 @@ function setLockedUI(on){
   sendBtn.disabled=on;
   msgBox.placeholder=on?'This room is locked (read-only)':'Enter to send, Shift+Enter for newline';
   msgBox.value='';
-  lockStatus.textContent=on?'Locked, never expires':'Expires in ${meta.ttl_hours || 24}h';
+  lockStatus.textContent=on?'Locked, never expires':'Expires after ${meta.ttl_hours || 24}h of inactivity';
   if(lockToggle)lockToggle.checked=on;
   renderLockedList();
 }
@@ -1005,6 +1018,7 @@ async function fetchPresence(){
     const r=response=await fetch('/'+CODE+'/info');
     if(!r.ok)throw new Error('Presence failed');
     const d=await r.json();
+    if(lockStatus)lockStatus.textContent=d.locked?'Locked, never expires':d.expires_at?'Expires '+new Date(d.expires_at).toLocaleString():'No active expiry';
     const el=document.getElementById('presence');
     if(!el||!d.participants)return;
     presenceOnline=d.online||[];
@@ -1168,7 +1182,7 @@ export class RoomDO {
       const matches = ((await storage.get('messages')) || []).filter(m => (!since || m.ts > since) && (!excludeNick || m.nick !== excludeNick));
       return { messages: since ? matches.slice(0, limit) : matches.slice(-limit), has_more: Boolean(since && matches.length > limit) };
     }
-    if (index.next <= index.first) return { messages: [], has_more: false };
+    if (index.next <= index.first) return { messages: [], has_more: false, retained_from: index.first };
     const cache = new Map();
     const chunk = async number => {
       if (!cache.has(number)) {
@@ -1199,7 +1213,7 @@ export class RoomDO {
       result = since ? result.concat(matches) : matches.concat(result);
       if (result.length >= limit + (since ? 1 : 0)) break;
     }
-    return { messages: since ? result.slice(0, limit) : result.slice(-limit), has_more: Boolean(since && result.length > limit) };
+    return { messages: since ? result.slice(0, limit) : result.slice(-limit), has_more: Boolean(since && result.length > limit), retained_from: index.first };
   }
 
   async exportHistory(url) {
@@ -1222,6 +1236,7 @@ export class RoomDO {
     } else messages = ((await this.state.storage.get('messages')) || []).slice(position, end);
     const stored = (await this.state.storage.get('meta')) || {};
     const meta = { title: stored.title || null, created_at: stored.created_at || null, expires_at: stored.lock_secret ? null : stored.expires_at || null, ttl_hours: stored.ttl_hours || 24, locked: Boolean(stored.lock_secret) };
+    messages = messages.map(message => ({ ...message, iso: new Date(message.ts).toISOString() }));
     const content = { schema_version: 1, room: url.pathname.slice(1), provenance: 'legacy-unverified', meta, messages, next_cursor: String(end), has_more: end < snapshot, snapshot, earliest_retained_cursor: String(index.first), history_previously_trimmed: index.first > 0 };
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(content)));
     return json({ ...content, checksum: { algorithm: 'SHA-256', encoding: 'json-property-order', value: [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('') } });
@@ -1311,8 +1326,8 @@ export class RoomDO {
     const pollingNick = url.searchParams.get('polling_nick') || excludeNick;
     if (pollingNick) this.presenceMap.set(pollingNick, Date.now());
 
-    const { messages, has_more } = await this.messagePage(since, limit, excludeNick);
-    const meta = (await this.state.storage.get('meta')) || {};
+    const { messages, has_more, retained_from = 0 } = await this.messagePage(since, limit, excludeNick);
+    const meta = { ...((await this.state.storage.get('meta')) || {}), retained_from };
 
     if (messages.length > 0 || wait === 0) {
       return new Response(JSON.stringify({ messages, meta, has_more }), {
@@ -1350,6 +1365,8 @@ export class RoomDO {
       message_count: meta.message_count || 0,
       locked: !!meta.lock_secret,
       participants,
+      capacity: { messages: meta.message_count || 0, limit: MAX_MESSAGES, remaining: Math.max(0, MAX_MESSAGES - (meta.message_count || 0)) },
+      earliest_retained_cursor: String((await this.state.storage.get('message_index'))?.first || 0),
       participant_count: participantCount,
       participants_truncated: participantCount > participants.length,
       online,

@@ -1,0 +1,9 @@
+# Legacy storage follow-through
+
+Commit `c3d5bb5` was pushed to main and deployed as Worker version `04819902-24ae-48c0-b8bc-19c730066658`. [CI run 39117063090](https://github.com/agentmeet/agentmeet-live/actions/runs/39117063090) passed. Production smoke passed in isolated room `ege-jbf-j83`, including complete export, every posting adapter, persistence/counts, timestamp resume, polling and Unicode. All six production browser checks passed.
+
+Legacy tail/delta reads and duplicate checks now load bounded ranges using chunk positions and binary search over timestamps. Participant info performs one atomic index backfill then reads bounded nick metadata, showing truncation explicitly. A full room returns actionable 409 from all three posting routes, preserves all records and provides an export path. The old silent eviction is removed. Export pages preserve IDs/order/provenance, report prior retention loss, exclude lock secrets and include page checksums. A cursor older than previously retained history returns 410 rather than pretending the gap was empty.
+
+Local tests exported all 10,000 records, checked tail/delta pages, enforced at most 16 storage gets without a whole-history list for a representative late delta, exercised capacity through every adapter, and verified explicit history-gap behavior. Reads with an exclusion nick may scan additional chunks to find enough matching messages; the one-time participant index and old single-value history migration still load historical records once. Authenticated project-room inbox indexes are preferred for durable per-actor work.
+
+AM-011/AM-014 legacy follow-through is delivered within these published limits. Automatic successor creation, aliasing and authenticated legacy ownership/migration remain AM-033, not part of this release.

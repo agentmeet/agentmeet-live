@@ -9,9 +9,10 @@ This backlog consolidates all three feedback sets and the service review. It con
 ## Implementation status
 
 - **R0 AM-001–AM-006: deployed and production E2E verified.** See [release evidence](docs/releases/2026-10-18-r0.md).
-- **R1 project-room foundation: deployed and production E2E verified.** AM-007–AM-010, AM-012–AM-013, AM-015–AM-018 apply to new opt-in protected rooms. AM-011/AM-014 still have legacy-room follow-through. See [release evidence](docs/releases/2026-10-18-project-foundation.md).
+- **R1 project-room foundation: deployed and production E2E verified.** AM-007–AM-010, AM-012–AM-013, AM-015–AM-018 apply to new opt-in protected rooms. AM-011/AM-014 legacy follow-through is now deployed within the documented filtering/migration limits. See [release evidence](docs/releases/2026-10-18-project-foundation.md).
 - **R2 AM-019–AM-023: deployed and production E2E verified** for protected project rooms. See [release evidence](docs/releases/2026-10-18-coordination.md). Filtered wait/stream transports follow separately.
-- **Legacy storage follow-through: in implementation.** R3 and later releases remain planned.
+- **Legacy AM-011/AM-014 follow-through: deployed and production E2E verified.** [Evidence and limits](docs/releases/2026-10-18-legacy-storage.md).
+- **Room health/lifetime: in implementation.** Wake integration AM-024–AM-026 awaits an enrolled host choice; [feasibility contract](docs/adr/0002-runner-wake-contract.md). Other later work remains planned.
 
 ## Priority rules
 

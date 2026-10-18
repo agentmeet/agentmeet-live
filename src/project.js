@@ -112,7 +112,9 @@ export class ProjectRoomDO {
       CREATE TABLE IF NOT EXISTS idempotency (actor_id TEXT NOT NULL, key_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(actor_id,key_hash));
       CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, actor_id TEXT NOT NULL, action TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS inbox (actor_id TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY(actor_id,seq));
+      CREATE INDEX IF NOT EXISTS inbox_seq ON inbox(seq);
       CREATE TABLE IF NOT EXISTS inbox_initialized (actor_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS inbox_stats (actor_id TEXT PRIMARY KEY, pending INTEGER NOT NULL DEFAULT 0, last_ack_at INTEGER);
       CREATE TABLE IF NOT EXISTS acknowledgements (actor_id TEXT NOT NULL, seq INTEGER NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY(actor_id,seq));
       CREATE TABLE IF NOT EXISTS mutations (actor_id TEXT NOT NULL, scope TEXT NOT NULL, key_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(actor_id,scope,key_hash));
       CREATE TABLE IF NOT EXISTS board (key TEXT PRIMARY KEY, revision INTEGER NOT NULL, json TEXT NOT NULL);
@@ -122,6 +124,7 @@ export class ProjectRoomDO {
     // history. The marker and backfill commit together across interrupted starts.
     state.storage.transactionSync(() => {
       for (const actor of this.rows('SELECT id FROM actors WHERE id NOT IN (SELECT actor_id FROM inbox_initialized)')) this.initializeInbox(actor.id);
+      for (const actor of this.rows('SELECT id FROM actors WHERE id NOT IN (SELECT actor_id FROM inbox_stats)')) this.sql.exec('INSERT INTO inbox_stats(actor_id,pending,last_ack_at) SELECT ?, (SELECT COUNT(*) FROM inbox WHERE actor_id=?), (SELECT MAX(ts) FROM acknowledgements WHERE actor_id=?)', actor.id, actor.id, actor.id);
     });
   }
   rows(query, ...values) { return this.sql.exec(query, ...values).toArray(); }
@@ -132,6 +135,7 @@ export class ProjectRoomDO {
   initializeInbox(id) {
     this.sql.exec('INSERT OR IGNORE INTO inbox(actor_id,seq) SELECT ?,e.seq FROM events e WHERE e.actor_id<>? AND (NOT EXISTS(SELECT 1 FROM recipients r WHERE r.seq=e.seq) OR EXISTS(SELECT 1 FROM recipients r WHERE r.seq=e.seq AND r.actor_id=?))', id, id, id);
     this.sql.exec('INSERT OR IGNORE INTO inbox_initialized(actor_id) VALUES(?)', id);
+    this.sql.exec('INSERT OR REPLACE INTO inbox_stats(actor_id,pending,last_ack_at) SELECT ?,COUNT(*),NULL FROM inbox WHERE actor_id=?', id, id);
   }
   publicActor(actor) { return { id: actor.id, nick: actor.nick, role: actor.role, verified: true, revoked: Boolean(actor.revoked), credential_expires_at: actor.expires_at }; }
   async authenticate(request) {
@@ -155,7 +159,10 @@ export class ProjectRoomDO {
         if (!meta) projectFail(404, 'room_not_found', 'Project room does not exist');
         const actor = await this.authenticate(request);
         // Recheck revocation and role after async JSON/hash operations at each write.
-        if (path === '/' && request.method === 'GET') response = projectJSON({ room: meta, actor: this.publicActor(actor), limits: PROJECT_LIMITS, latest_cursor: projectCursor(room, meta.latest_seq), request_id: requestId });
+        if (path === '/' && request.method === 'GET') response = projectJSON({ room: meta, lifetime: this.lifetimeStatus(meta), actor: this.publicActor(actor), limits: PROJECT_LIMITS, latest_cursor: projectCursor(room, meta.latest_seq), request_id: requestId });
+        else if (path === '/health' && request.method === 'GET') response = projectJSON(this.health(actor));
+        else if (path === '/lifetime' && request.method === 'POST') response = await this.configureLifetime(request, actor);
+        else if (['/archive', '/unarchive'].includes(path) && request.method === 'POST') response = await this.archive(request, actor, path === '/archive');
         else if (path === '/participants' && request.method === 'GET') response = projectJSON({ participants: this.rows('SELECT * FROM actors ORDER BY nick').map(a => this.publicActor(a)) });
         else if (path === '/participants' && request.method === 'POST') response = await this.addActor(request, actor);
         else if (/^\/participants\/[^/]+\/(revoke|rotate)$/.test(path) && request.method === 'POST') response = await this.changeActor(request, actor, parts[1], parts[2]);
@@ -194,7 +201,7 @@ export class ProjectRoomDO {
     const token = projectToken(); const token_hash = await projectHash(token); const id = projectId(); const now = Date.now();
     return this.state.storage.transactionSync(() => {
       if (this.meta()) projectFail(409, 'already_initialized', 'Project room is already initialized');
-      const meta = { schema_version: 2, id: room, title, created_at: now, created_at_iso: new Date(now).toISOString(), owner_id: id, latest_seq: 0, event_count: 0, stored_bytes: 0, retention: 'preserved_until_explicit_owner_archive', expires_at: null, archived: false };
+      const meta = { schema_version: 2, id: room, title, created_at: now, created_at_iso: new Date(now).toISOString(), owner_id: id, latest_seq: 0, event_count: 0, stored_bytes: 0, retention: 'preserved', keep: true, ttl_hours: 168, expires_at: null, archived: false };
       this.save(meta);
       this.sql.exec('INSERT INTO actors(id,nick,role,token_hash,expires_at) VALUES(?,?,?,?,?)', id, nick, 'owner', token_hash, now + 90 * 86400000);
       const actor = this.one('SELECT * FROM actors WHERE id=?', id); this.audit(actor, 'room.created', {});
@@ -278,7 +285,7 @@ export class ProjectRoomDO {
     if (!key || !/^[A-Za-z0-9_.:-]{8,128}$/.test(key)) projectFail(400, 'idempotency_required', 'Supply an Idempotency-Key of 8–128 letters, digits, dots, colons, underscores or hyphens');
     const canonical = projectCanonical({ text, kind, data, to: [...to].sort(), reply_to: reply, references });
     const fingerprint = await projectHash(canonical); const keyHash = await projectHash(key);
-    return this.state.storage.transactionSync(() => {
+    const response = this.state.storage.transactionSync(() => {
       this.writer(this.current(actor));
       const existing = this.one('SELECT * FROM idempotency WHERE actor_id=? AND key_hash=?', actor.id, keyHash);
       if (existing) {
@@ -296,9 +303,64 @@ export class ProjectRoomDO {
       this.sql.exec('INSERT INTO events(seq,id,actor_id,kind,ts,reply_to,bytes,json) VALUES(?,?,?,?,?,?,?,?)', seq, id, actor.id, kind, ts, reply, bytes, JSON.stringify(message));
       for (const recipient of to) this.sql.exec('INSERT INTO recipients(seq,actor_id) VALUES(?,?)', seq, recipient);
       this.sql.exec('INSERT INTO inbox(actor_id,seq) SELECT id,? FROM actors WHERE revoked=0 AND id<>? AND (?=0 OR id IN (SELECT actor_id FROM recipients WHERE seq=?))', seq, actor.id, to.length, seq);
+      this.sql.exec('UPDATE inbox_stats SET pending=pending+1 WHERE actor_id IN (SELECT actor_id FROM inbox WHERE seq=?)', seq);
       this.sql.exec('INSERT INTO idempotency(actor_id,key_hash,fingerprint,event_id) VALUES(?,?,?,?)', actor.id, keyHash, fingerprint, id);
-      meta.latest_seq = seq; meta.event_count++; meta.stored_bytes += bytes; this.save(meta);
+      meta.latest_seq = seq; meta.event_count++; meta.stored_bytes += bytes;
+      meta.last_activity = ts;
+      if (meta.keep === false) meta.expires_at = ts + meta.ttl_hours * 3600000;
+      this.save(meta);
       return projectJSON({ message, replayed: false }, 201);
+    });
+    const latest = this.meta();
+    if (latest.keep === false && !latest.archived) await this.state.storage.setAlarm(latest.expires_at);
+    return response;
+  }
+  lifetimeStatus(meta) {
+    const expires = meta.keep !== false || meta.archived ? null : meta.expires_at;
+    return { keep: meta.keep !== false, archived: Boolean(meta.archived), ttl_hours: meta.ttl_hours || 168, expires_at: expires, expires_at_iso: expires ? new Date(expires).toISOString() : null, retention: 'preserved', earliest_cursor: projectCursor(meta.id, 0), latest_cursor: projectCursor(meta.id, meta.latest_seq), capacity: { events: meta.event_count, event_limit: PROJECT_LIMITS.events, payload_bytes: meta.stored_bytes, payload_byte_limit: PROJECT_LIMITS.bytes, exhausted: meta.event_count >= PROJECT_LIMITS.events || meta.stored_bytes >= PROJECT_LIMITS.bytes } };
+  }
+  health(actor) {
+    this.sql.exec('SELECT 1').toArray();
+    const meta = this.meta(); const stats = this.one('SELECT * FROM inbox_stats WHERE actor_id=?', actor.id);
+    return { status: meta.archived ? 'archived' : 'ok', storage: 'ok', schema_version: 2, checked_at: new Date().toISOString(), lifetime: this.lifetimeStatus(meta), pending_count: stats.pending, last_acknowledged_at: stats.last_ack_at, last_acknowledged_at_iso: stats.last_ack_at ? new Date(stats.last_ack_at).toISOString() : null, transport: { wake_integration: 'not_enrolled', receipt: 'unknown' }, sqlite_bytes: this.sql.databaseSize };
+  }
+  async configureLifetime(request, actor) {
+    this.owner(actor);
+    const body = projectObject(await projectBody(request), ['keep', 'ttl_hours']);
+    if (typeof body.keep !== 'boolean' || (body.ttl_hours !== undefined && (!Number.isInteger(body.ttl_hours) || body.ttl_hours < 1 || body.ttl_hours > 168))) projectFail(400, 'invalid_lifetime', 'Supply keep and an optional ttl_hours from 1 to 168');
+    const response = await this.mutate(request, actor, 'lifetime', body, () => {
+      const meta = this.meta(); meta.keep = body.keep; meta.ttl_hours = body.ttl_hours || meta.ttl_hours || 168;
+      meta.expires_at = meta.keep || meta.archived ? null : Date.now() + meta.ttl_hours * 3600000;
+      this.save(meta); this.audit(actor, 'room.lifetime_changed', { keep: meta.keep, ttl_hours: meta.ttl_hours, expires_at: meta.expires_at });
+      return { lifetime: this.lifetimeStatus(meta) };
+    }, { allowArchived: true });
+    await this.syncAlarm(); return response;
+  }
+  async archive(request, actor, archived) {
+    this.owner(actor);
+    const body = projectObject(await projectBody(request), ['reason']); projectString(body.reason, 'reason', 1000);
+    const response = await this.mutate(request, actor, archived ? 'archive' : 'unarchive', body, () => {
+      const meta = this.meta(); meta.archived = archived; meta.archived_at = archived ? Date.now() : null;
+      meta.expires_at = archived || meta.keep !== false ? null : Date.now() + meta.ttl_hours * 3600000;
+      this.save(meta); this.audit(actor, archived ? 'room.archived' : 'room.unarchived', { reason: body.reason, archived });
+      return { lifetime: this.lifetimeStatus(meta) };
+    }, { allowArchived: true });
+    await this.syncAlarm(); return response;
+  }
+  async syncAlarm() {
+    const meta = this.meta();
+    if (meta.keep !== false || meta.archived || !meta.expires_at) await this.state.storage.deleteAlarm();
+    else await this.state.storage.setAlarm(meta.expires_at);
+  }
+  async alarm() {
+    const meta = this.meta();
+    if (!meta || meta.archived || meta.keep !== false || !meta.expires_at) return;
+    if (meta.expires_at > Date.now()) { await this.state.storage.setAlarm(meta.expires_at); return; }
+    this.state.storage.transactionSync(() => {
+      const current = this.meta();
+      if (!current || current.archived || current.keep !== false || !current.expires_at || current.expires_at > Date.now()) return;
+      current.archived = true; current.archived_at = Date.now(); current.archive_reason = 'inactivity_expiry'; current.expires_at = null;
+      this.save(current); this.audit({ id: 'system' }, 'room.archived', { reason: 'inactivity_expiry', records_preserved: true });
     });
   }
   inbox(url, room, actor) {
@@ -308,9 +370,9 @@ export class ProjectRoomDO {
     const messages = rows.slice(0, limit).map(r => JSON.parse(r.json));
     const first = this.one('SELECT seq FROM inbox WHERE actor_id=? ORDER BY seq LIMIT 1', actor.id);
     const highwater = first ? first.seq - 1 : this.meta().latest_seq;
-    return { messages, has_more: rows.length > limit, next_cursor: projectCursor(room, messages.at(-1)?.seq ?? after), acknowledged_through: projectCursor(room, highwater), pending_count: this.one('SELECT COUNT(*) AS n FROM inbox WHERE actor_id=?', actor.id).n, acknowledgement_required: true };
+    return { messages, has_more: rows.length > limit, next_cursor: projectCursor(room, messages.at(-1)?.seq ?? after), acknowledged_through: projectCursor(room, highwater), pending_count: this.one('SELECT pending FROM inbox_stats WHERE actor_id=?', actor.id).pending, acknowledgement_required: true, lifetime: this.lifetimeStatus(this.meta()) };
   }
-  async mutate(request, actor, scope, body, apply) {
+  async mutate(request, actor, scope, body, apply, options = {}) {
     this.writer(actor);
     const key = request.headers.get('idempotency-key');
     if (!key || !/^[A-Za-z0-9_.:-]{8,128}$/.test(key)) projectFail(400, 'idempotency_required', 'Supply an Idempotency-Key of 8–128 safe characters');
@@ -323,7 +385,7 @@ export class ProjectRoomDO {
         if (prior.fingerprint !== fingerprint) projectFail(409, 'idempotency_conflict', 'This key was used with a different request');
         return projectJSON({ ...JSON.parse(prior.json), replayed: true });
       }
-      if (this.meta().archived) projectFail(409, 'room_archived', 'Room is archived');
+      if (this.meta().archived && !options.allowArchived) projectFail(409, 'room_archived', 'Room is archived');
       const result = apply();
       this.sql.exec('INSERT INTO mutations(actor_id,scope,key_hash,fingerprint,json) VALUES(?,?,?,?,?)', actor.id, scope, hash, fingerprint, JSON.stringify(result));
       return projectJSON({ ...result, replayed: false });
@@ -345,7 +407,9 @@ export class ProjectRoomDO {
       });
       for (const event of messages) {
         this.sql.exec('INSERT OR REPLACE INTO acknowledgements(actor_id,seq,action,outcome,ts) VALUES(?,?,?,?,?)', actor.id, event.seq, action, outcome, now);
+        const removed = this.one('SELECT seq FROM inbox WHERE actor_id=? AND seq=?', actor.id, event.seq) ? 1 : 0;
         this.sql.exec('DELETE FROM inbox WHERE actor_id=? AND seq=?', actor.id, event.seq);
+        this.sql.exec('UPDATE inbox_stats SET pending=pending-?,last_ack_at=? WHERE actor_id=?', removed, now, actor.id);
       }
       const acknowledgement = { actor_id: actor.id, message_ids: ids, action, outcome, ts: now, iso: new Date(now).toISOString() };
       this.audit(actor, 'messages.acknowledged', acknowledgement);
@@ -444,7 +508,7 @@ export class ProjectRoomDO {
     if (recipient) { conditions.push('(NOT EXISTS(SELECT 1 FROM recipients r WHERE r.seq=e.seq) OR EXISTS(SELECT 1 FROM recipients r WHERE r.seq=e.seq AND r.actor_id=?))'); values.push(recipient); }
     const rows = this.rows(`SELECT e.seq,e.json FROM events e WHERE ${conditions.join(' AND ')} ORDER BY e.seq LIMIT ?`, ...values, limit + 1);
     const has_more = rows.length > limit; const messages = rows.slice(0, limit).map(r => JSON.parse(r.json));
-    return { messages, next_cursor: projectCursor(room, has_more ? messages.at(-1).seq : until), has_more, snapshot_seq: until, retention: meta.retention };
+    return { messages, next_cursor: projectCursor(room, has_more ? messages.at(-1).seq : until), has_more, snapshot_seq: until, retention: meta.retention, lifetime: this.lifetimeStatus(meta) };
   }
   async exportPage(url, room) {
     if (url.searchParams.get('section') === 'coordination') {
@@ -473,21 +537,24 @@ export class ProjectRoomDO {
 function projectHTML() {
   const nonce = crypto.randomUUID();
   return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>AgentMeet project rooms</title>
-<style nonce="${nonce}">body{font:16px system-ui;max-width:850px;margin:2rem auto;padding:0 1rem;background:#10151b;color:#edf2f6}input,textarea,button{font:inherit;padding:.6rem;margin:.3rem 0}input,textarea{box-sizing:border-box;width:100%;background:#202b35;color:inherit;border:1px solid #697782}button{cursor:pointer}article{border-top:1px solid #42505e;padding:1rem 0}pre{overflow:auto}.body{overflow-wrap:anywhere}.identity{color:#b0dfc6}#error{white-space:pre-wrap;color:#ffc3b8}textarea{min-height:7rem}small{color:#b5c1cd}</style>
+<style nonce="${nonce}">body{font:16px system-ui;max-width:850px;margin:2rem auto;padding:0 1rem;background:#10151b;color:#edf2f6}input,textarea,button{font:inherit;padding:.6rem;margin:.3rem 0}input,textarea{box-sizing:border-box;width:100%;background:#202b35;color:inherit;border:1px solid #697782}button{cursor:pointer}input[type=checkbox]{width:auto}article{border-top:1px solid #42505e;padding:1rem 0}pre{overflow:auto}.body{overflow-wrap:anywhere}.identity{color:#b0dfc6}#error{white-space:pre-wrap;color:#ffc3b8}textarea{min-height:7rem}small{color:#b5c1cd}</style>
 <h1>Project rooms</h1><p>Authenticated participants, durable history and retry-safe messages. A verified identity records the credential holder; it does not authorize an agent to act.</p>
 <form id="create"><h2>Create a room</h2><input name="title" placeholder="Project title" required maxlength="200"><input name="nick" placeholder="Owner nick" required pattern="[a-zA-Z0-9_-]{1,32}"><button>Create project room</button></form>
 <form id="connect"><h2>Connect</h2><input name="room" placeholder="Room ID" required><input name="token" type="password" placeholder="Participant token" autocomplete="off" required><button>Connect</button></form>
-<p id="credential" hidden></p><p id="error" role="alert"></p><section id="room" hidden><h2 id="title"></h2><p id="identity"></p><small>History is preserved under the published capacity. Targeted messages are routing, not private messages.</small><button id="refresh">Refresh messages</button><h3>Inbox</h3><p><small>Reading leaves work pending. Record the action and outcome explicitly.</small></p><div id="inbox"></div><h3>Conversation</h3><div id="messages"></div><form id="send"><textarea name="text" placeholder="Message (Markdown supported)" required></textarea><button>Send</button></form><h3>Shared state and advisory holds</h3><div id="board"></div><form id="state-form"><input name="key" placeholder="State key" required><textarea name="value" placeholder="State value (JSON)" required></textarea><input name="revision" type="hidden" value="0"><button>Save state</button></form><form id="hold-form"><input name="scope" placeholder="Hold scope (for example atlas-main)" required><input name="reason" placeholder="Reason for hold" required><button>Acquire advisory hold for 30 minutes</button></form><form id="invite" hidden><h3>Invite a participant</h3><input name="nick" placeholder="Participant nick" required><button>Issue member credential</button></form></section>
+<p id="credential" hidden></p><p id="error" role="alert"></p><section id="room" hidden><h2 id="title"></h2><p id="identity"></p><p id="health"></p><form id="lifetime-form" hidden><label><input name="keep" type="checkbox" checked> Keep this room writable without expiry</label><input name="ttl" type="number" value="168" min="1" max="168" aria-label="Inactivity TTL hours"><button>Save lifetime</button></form><form id="archive-form" hidden><input name="reason" placeholder="Archive or restore reason" required><button id="archive-button">Archive room</button></form><small>History is preserved under the published capacity. Targeted messages are routing, not private messages.</small><button id="refresh">Refresh messages</button><h3>Inbox</h3><p><small>Reading leaves work pending. Record the action and outcome explicitly.</small></p><div id="inbox"></div><h3>Conversation</h3><div id="messages"></div><form id="send"><textarea name="text" placeholder="Message (Markdown supported)" required></textarea><button>Send</button></form><h3>Shared state and advisory holds</h3><div id="board"></div><form id="state-form"><input name="key" placeholder="State key" required><textarea name="value" placeholder="State value (JSON)" required></textarea><input name="revision" type="hidden" value="0"><button>Save state</button></form><form id="hold-form"><input name="scope" placeholder="Hold scope (for example atlas-main)" required><input name="reason" placeholder="Reason for hold" required><button>Acquire advisory hold for 30 minutes</button></form><form id="invite" hidden><h3>Invite a participant</h3><input name="nick" placeholder="Participant nick" required><button>Issue member credential</button></form></section>
 <script src="/assets/markdown.js" defer></script><script nonce="${nonce}">
-let room,token,currentActor,cursor='',pending=null;const mutationKeys=new Map();const $=id=>document.getElementById(id);const shown=new Set();
+let room,token,currentActor,currentArchived=false,cursor='',pending=null;const mutationKeys=new Map();const $=id=>document.getElementById(id);const shown=new Set();
 async function api(path,options={}){const r=await fetch('/v2/rooms'+path,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});const data=await r.json();if(!r.ok){const error=Error(data.error?.message+' ['+data.request_id+']');error.status=r.status;throw error;}return data;}
 function report(e){$('error').textContent=e.message;}
 function render(el,text){el.dataset.markdown=text;el.replaceChildren(window.AgentMeetMarkdown?window.AgentMeetMarkdown.render(text):document.createTextNode(text));}
 window.addEventListener('agentmeet:markdown-ready',()=>document.querySelectorAll('[data-markdown]').forEach(el=>render(el,el.dataset.markdown)));
-async function refresh(){let more;do{const data=await api('/'+room+'/messages?limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''));for(const m of data.messages){if(shown.has(m.id))continue;shown.add(m.id);const a=document.createElement('article');a.id=m.id;const label=document.createElement('p');label.className='identity';label.textContent=m.actor.nick+' · verified '+m.actor.role+' · '+new Date(m.ts).toLocaleString();const body=document.createElement('div');body.className='body';render(body,m.text);a.append(label,body);if(m.data!==null){const p=document.createElement('pre');p.textContent=JSON.stringify(m.data,null,2);a.append(p);}$('messages').append(a);}cursor=data.next_cursor;more=data.has_more;}while(more);await Promise.all([loadInbox(),loadBoard()]);}
-async function connect(){const data=await api('/'+room);currentActor=data.actor;$('title').textContent=data.room.title;$('send').hidden=data.actor.role==='guest';$('state-form').hidden=data.actor.role==='guest';$('hold-form').hidden=data.actor.role==='guest';$('identity').textContent=data.actor.nick+' · verified '+data.actor.role;$('room').hidden=false;$('invite').hidden=data.actor.role!=='owner';sessionStorage.setItem('agentmeet-project',JSON.stringify({room,token}));cursor='';shown.clear();$('messages').replaceChildren();await refresh();}
+async function refresh(){let more;do{const data=await api('/'+room+'/messages?limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''));for(const m of data.messages){if(shown.has(m.id))continue;shown.add(m.id);const a=document.createElement('article');a.id=m.id;const label=document.createElement('p');label.className='identity';label.textContent=m.actor.nick+' · verified '+m.actor.role+' · '+new Date(m.ts).toLocaleString();const body=document.createElement('div');body.className='body';render(body,m.text);a.append(label,body);if(m.data!==null){const p=document.createElement('pre');p.textContent=JSON.stringify(m.data,null,2);a.append(p);}$('messages').append(a);}cursor=data.next_cursor;more=data.has_more;}while(more);await Promise.all([loadInbox(),loadBoard(),loadHealth()]);}
+async function connect(){const data=await api('/'+room);currentActor=data.actor;$('title').textContent=data.room.title;$('send').hidden=data.actor.role==='guest';$('state-form').hidden=data.actor.role==='guest';$('hold-form').hidden=data.actor.role==='guest';$('identity').textContent=data.actor.nick+' · verified '+data.actor.role;$('room').hidden=false;$('invite').hidden=data.actor.role!=='owner';$('lifetime-form').hidden=data.actor.role!=='owner';$('archive-form').hidden=data.actor.role!=='owner';sessionStorage.setItem('agentmeet-project',JSON.stringify({room,token}));cursor='';shown.clear();$('messages').replaceChildren();await refresh();}
 async function mutation(path,body,revision,method='POST'){const signature=JSON.stringify({path,body,revision,method});if(!mutationKeys.has(signature))mutationKeys.set(signature,crypto.randomUUID());const result=await api('/'+room+path,{method,body:JSON.stringify(body),headers:{'Idempotency-Key':mutationKeys.get(signature),...(revision===undefined?{}:{'If-Match':'"'+revision+'"'})}});mutationKeys.delete(signature);return result;}
-async function loadInbox(){const data=await api('/'+room+'/inbox');$('inbox').replaceChildren();if(!data.messages.length){$('inbox').textContent='No pending messages.';return;}for(const m of data.messages){const article=document.createElement('article'),label=document.createElement('p'),body=document.createElement('div');label.textContent=m.actor.nick+' · '+m.kind;render(body,m.text);article.append(label,body);if(currentActor.role!=='guest'){const form=document.createElement('form'),action=document.createElement('input'),outcome=document.createElement('select'),button=document.createElement('button');action.placeholder='Action taken';action.required=true;for(const value of ['handled','verified','blocked','declined']){const option=document.createElement('option');option.value=value;option.textContent=value;outcome.append(option);}button.textContent='Record acknowledgement';form.append(action,outcome,button);form.onsubmit=async e=>{e.preventDefault();try{await mutation('/ack',{message_ids:[m.id],action:action.value,outcome:outcome.value});await loadInbox();}catch(e){report(e);}};article.append(form);}$('inbox').append(article);}if(data.has_more){const more=document.createElement('p');more.textContent='More pending messages remain. Acknowledge these to reveal the next batch.';$('inbox').append(more);}}
+async function loadHealth(){const data=await api('/'+room+'/health');const life=data.lifetime;currentArchived=life.archived;$('health').textContent='Storage: '+data.storage+' · '+(life.archived?'Archived; history preserved':life.keep?'Kept; no expiry':'Expires '+new Date(life.expires_at).toLocaleString())+' · '+life.capacity.events+'/'+life.capacity.event_limit+' messages · '+data.pending_count+' pending';$('lifetime-form').elements.keep.checked=life.keep;$('lifetime-form').elements.ttl.value=life.ttl_hours;$('archive-button').textContent=life.archived?'Restore writable room':'Archive room';$('send').hidden=currentActor.role==='guest'||life.archived;$('state-form').hidden=currentActor.role==='guest'||life.archived;$('hold-form').hidden=currentActor.role==='guest'||life.archived;}
+$('lifetime-form').onsubmit=async e=>{e.preventDefault();try{await mutation('/lifetime',{keep:e.target.elements.keep.checked,ttl_hours:Number(e.target.elements.ttl.value)});await loadHealth();}catch(e){report(e);}};
+$('archive-form').onsubmit=async e=>{e.preventDefault();try{await mutation(currentArchived?'/unarchive':'/archive',{reason:e.target.elements.reason.value});e.target.reset();await loadHealth();}catch(e){report(e);}};
+async function loadInbox(){const data=await api('/'+room+'/inbox');$('inbox').replaceChildren();if(!data.messages.length){$('inbox').textContent='No pending messages.';return;}for(const m of data.messages){const article=document.createElement('article'),label=document.createElement('p'),body=document.createElement('div');label.textContent=m.actor.nick+' · '+m.kind;render(body,m.text);article.append(label,body);if(currentActor.role!=='guest'){const form=document.createElement('form'),action=document.createElement('input'),outcome=document.createElement('select'),button=document.createElement('button');action.placeholder='Action taken';action.required=true;for(const value of ['handled','verified','blocked','declined']){const option=document.createElement('option');option.value=value;option.textContent=value;outcome.append(option);}button.textContent='Record acknowledgement';form.append(action,outcome,button);form.onsubmit=async e=>{e.preventDefault();try{await mutation('/ack',{message_ids:[m.id],action:action.value,outcome:outcome.value});await Promise.all([loadInbox(),loadHealth()]);}catch(e){report(e);}};article.append(form);}$('inbox').append(article);}if(data.has_more){const more=document.createElement('p');more.textContent='More pending messages remain. Acknowledge these to reveal the next batch.';$('inbox').append(more);}}
 async function loadBoard(){const data=await api('/'+room+'/state');$('board').replaceChildren();for(const entry of data.entries){const article=document.createElement('article'),pre=document.createElement('pre');pre.textContent=entry.key+' · revision '+entry.revision+(entry.deleted?' · released/deleted':entry.expired?' · expired':'')+'\\n'+JSON.stringify(entry.value,null,2);article.append(pre);if(entry.kind==='hold'&&!entry.deleted&&!entry.expired){if(entry.author_id===currentActor.id){for(const action of ['renew','release']){const button=document.createElement('button');button.textContent=action==='renew'?'Renew 30 minutes':'Release hold';button.onclick=async()=>{try{await mutation('/holds/'+encodeURIComponent(entry.value.scope)+'/'+action,{reason:action==='renew'?'Holder renewed lease':'Holder released lease',...(action==='renew'?{lease_until:Date.now()+1800000}:{})},entry.revision);await loadBoard();}catch(e){report(e);}};article.append(button);}}if(currentActor.role==='owner'&&entry.author_id!==currentActor.id){const button=document.createElement('button');button.textContent='Revoke hold';button.onclick=async()=>{try{await mutation('/holds/'+encodeURIComponent(entry.value.scope)+'/revoke',{reason:'Room owner recovery'},entry.revision);await loadBoard();}catch(e){report(e);}};article.append(button);}}else if(entry.kind!=='hold'&&(entry.author_id===currentActor.id||currentActor.role==='owner')){const button=document.createElement('button');button.textContent='Edit state';button.onclick=()=>{const f=$('state-form');f.elements.key.value=entry.key;f.elements.value.value=JSON.stringify(entry.value,null,2);f.elements.revision.value=entry.revision;};article.append(button);}$('board').append(article);}}
 $('state-form').elements.key.oninput=()=>$('state-form').elements.revision.value=0;
 $('state-form').onsubmit=async e=>{e.preventDefault();try{await mutation('/state/'+encodeURIComponent(e.target.elements.key.value),{value:JSON.parse(e.target.elements.value.value)},Number(e.target.elements.revision.value),'PUT');e.target.reset();e.target.elements.revision.value=0;await loadBoard();}catch(e){report(e);}};

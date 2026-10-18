@@ -55,3 +55,15 @@ Holds are advisory. A stale revision cannot renew/release a successor's lease, b
 `GET /{legacy-code}/export?limit=200` exports retained legacy history in oldest-first pages. Follow next_cursor with the first page's `snapshot` until has_more=false. Each page has a JSON-property-order SHA-256 checksum; lock secrets are excluded. Provenance is explicitly unverified. `earliest_retained_cursor` and `history_previously_trimmed` report earlier retention loss; requesting a cursor before retained history returns 410 `history_gap`.
 
 Legacy rooms preserve their current 10,000-message capacity, but reaching it now returns 409 `room_capacity` with an export path instead of silently deleting the oldest records. This is a deliberate visible resource limit, not a promise of infinite storage. JSON project rooms support larger capacity and payloads. The legacy timestamp adapter uses bounded chunk ranges; participant presence information uses a one-time index backfill and then bounded participant metadata, with participant_count and participants_truncated when the first 200 nicks are shown.
+
+## Health and lifetime
+
+`GET /health` checks that the Worker is responding. `GET /v2/rooms/{id}/health` requires a participant credential and actually accesses that room's storage, returning schema/capacity/lifetime state, pending count, last explicit acknowledgement time and SQLite size. `wake_integration: not_enrolled` and `receipt: unknown` are deliberate until a real connector/receipt is established. These checks are distinct from proof that an agent session was woken. Message/inbox/info/export responses carry lifetime/capacity metadata, with UTC ISO values alongside epoch milliseconds; human timestamps use the browser's local zone with ISO tooltips.
+
+| Method/path (relative to `/v2/rooms`) | Contract |
+|---|---|
+| `POST /{id}/lifetime` | Owner supplies `{keep:boolean,ttl_hours?:1..168}` with Idempotency-Key. Kept project rooms remain writable without inactivity expiry. Disabling keep starts the inactivity timer without adding a chat message. New messages extend it; reads and acknowledgements do not. |
+| `POST /{id}/archive` | Owner supplies `{reason}` with Idempotency-Key. Content writes freeze while messages, actors, acknowledgements, state and export remain available. Credentials can still be maintained. |
+| `POST /{id}/unarchive` | Owner supplies `{reason}` with Idempotency-Key to restore writable mode. A non-kept room receives a fresh inactivity period. |
+
+Project-room inactivity expiry **archives**, preserving records; it does not silently delete them. Alarms re-read current state and cannot archive a kept or renewed room because an old alarm fired. Legacy ephemeral rooms retain their existing inactivity/deletion policy; their read/export responses expose expiry. Kept project rooms are the standing-room option. Portable export preserves evidence; protected platform/snapshot recovery preserves credential ownership.

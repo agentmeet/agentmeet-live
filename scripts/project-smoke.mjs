@@ -25,7 +25,13 @@ const hold=await call(root+'/holds/main',invited.data.token,'POST',{reason:'prod
 assert.equal((await call(root+'/holds/main',token,'POST',{reason:'conflicting acquire',lease_until:Date.now()+60000},'production-conflict')).status,409);
 assert.equal((await call(root+'/holds/main/revoke',token,'POST',{reason:'E2E cleanup'},'production-revoke',hold.data.hold.revision)).status,200);
 const audit=await call(root+'/export?section=coordination',token);assert.ok(audit.data.records.some(r=>r.action==='messages.acknowledged'));assert.ok(audit.data.records.some(r=>r.action==='hold.revoke'));
+const health=await call(root+'/health',token);assert.equal(health.data.storage,'ok');assert.equal(health.data.pending_count,0);
+const timed=await call(root+'/lifetime',token,'POST',{keep:false,ttl_hours:1},'production-lifetime');assert.equal(timed.status,200);assert.ok(timed.data.lifetime.expires_at_iso);
+assert.equal((await call(root+'/archive',token,'POST',{reason:'production archive E2E'},'production-archive')).status,200);
+assert.equal((await call(root+'/messages',token,'POST',{text:'blocked archived write'},'production-archive-write')).status,409);
+assert.equal((await call(root+'/unarchive',token,'POST',{reason:'production restore E2E'},'production-unarchive')).status,200);
+assert.equal((await call(root+'/lifetime',token,'POST',{keep:true},'production-keep')).status,200);
 const exported=await call(root+'/export',token);assert.equal(exported.data.messages.length,2);assert.match(exported.data.checksum.value,/^[a-f0-9]{64}$/);assert.ok(!JSON.stringify(exported.data).includes(token));
 assert.equal((await call(root+'/participants/'+invited.data.participant.id+'/revoke',token,'POST',{})).status,200);
 assert.equal((await call(root,invited.data.token)).status,401);
-console.log('PASS project smoke: protected actors, large structured handoff, durable retry/conflict, sequence resume, inbox/ack, shared state, advisory holds, coordination export and revocation ('+creation.data.room.id+')');
+console.log('PASS project smoke: protected actors, large structured handoff, durable retry/conflict, sequence resume, inbox/ack, shared state, advisory holds, health/lifetime/archive, coordination export and revocation ('+creation.data.room.id+')');

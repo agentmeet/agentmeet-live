@@ -20,6 +20,8 @@ try {
   const member=await call(root+'/participants',owner,'POST',{nick:'worker'});
   const guest=await call(root+'/participants',owner,'POST',{nick:'reader',role:'guest'});
   assert.equal(member.status,201); assert.equal(guest.status,201);
+  const credentialExpiry=Date.now()+1000;
+  const expiring=await call(root+'/participants',owner,'POST',{nick:'expiring',expires_at:credentialExpiry});assert.equal(expiring.status,201);
   assert.equal((await call(root+'/participants',member.data.token,'POST',{nick:'unauthorized'})).status,403);
   assert.equal((await call(root+'/messages',guest.data.token,'POST',{text:'guest write'},'guest-key')).status,403);
   const payload={text:'# Package\n'+('漢'.repeat(3000)),kind:'MAP_READY',data:{types:Array.from({length:21},(_,i)=>({name:'type'+i,sha256:'a'.repeat(64),changed_maps:['albedo','normal']}))},to:[member.data.participant.id]};
@@ -70,5 +72,7 @@ try {
   assert.equal((await call(root+'/participants/'+member.data.participant.id+'/revoke',owner,'POST',{})).status,200);
   assert.equal((await call(root,rotation.data.token)).status,401);
   assert.equal((await call(root+'/participants/'+created.data.participant.id+'/revoke',owner,'POST',{})).status,409);
+  await new Promise(resolve=>setTimeout(resolve,Math.max(0,credentialExpiry-Date.now()+20)));
+  assert.equal((await call(root,expiring.data.token)).status,401,'expired credentials are rejected');
   console.log('PASS: protected SQLite rooms, scoped actors/rotation/revocation, atomic idempotency, 21-type handoffs, references, complete cursor/export paging and cross-room rejection');
 } finally { await mf.dispose(); }

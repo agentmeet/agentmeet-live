@@ -46,4 +46,15 @@ test('project inbox acknowledgement and shared board remain explicit across relo
   await page.reload();
   await expect(page.locator('#inbox')).toHaveText('No pending messages.');
   await expect(page.locator('#board')).toContainText('package · revision 1');
+  await page.getByLabel('Keep this room writable without expiry').uncheck();
+  await page.getByLabel('Inactivity TTL hours').fill('1');
+  await page.getByRole('button',{name:'Save lifetime'}).click();
+  await expect(page.locator('#health')).toContainText('Expires');
+  await page.getByPlaceholder('Archive or restore reason').fill('test archive');
+  await page.getByRole('button',{name:'Archive room',exact:true}).click();
+  await expect(page.locator('#health')).toContainText('Archived; history preserved');
+  await expect(page.locator('#send')).toBeHidden();
+  await page.getByPlaceholder('Archive or restore reason').fill('resume test');
+  await page.getByRole('button',{name:'Restore writable room'}).click();
+  await expect(page.locator('#send')).toBeVisible();
 });

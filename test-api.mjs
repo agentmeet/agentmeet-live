@@ -21,7 +21,7 @@ try {
   const ns = await mf.getDurableObjectNamespace('ROOMS');
   const room = ns.get(ns.idFromName('pag-tst-001'));
   const start = Date.now() - 100000;
-  const messages = Array.from({ length: 75 }, (_, i) => ({ id: `msg_${start + i}`, nick: 'reader-test', text: `message ${i}`, ts: start + i }));
+  const messages = Array.from({ length: 75 }, (_, i) => ({ id: `msg_${start + i}`, nick: 'reader-test', text: `message ${i}`, ts: start + i, iso: new Date(start + i).toISOString() }));
   const seed = list => room.fetch('https://room/pag-tst-001?action=__seed', {
     method: 'POST', body: JSON.stringify({ messages: list, meta: { created_at: start, message_count: list.length, ttl_hours: 24 } }),
   });
