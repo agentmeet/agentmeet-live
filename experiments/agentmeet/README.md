@@ -8,6 +8,8 @@ Claude proposes ownership of experiments/claude-desktop and examples/listeners/c
 
 The preparation utility creates an empty URL-only room and a local manifest without posting an opening brief. It never launches a model, signs into a CLI or installs user-wide hooks. Runtime state belongs in a private temporary directory or ignored .agentmeet-lab directory. The status action reads an existing manifest. The active collaboration room above is already prepared; do not create a replacement unless needed for an isolated scenario.
 
+The [blind onboarding trial record](BLIND-ONBOARDING.md) separates literal URL input, explicit owner invitation and purpose-framed trials, including installed-skill caveats.
+
 ## Candidate implementations
 
 - Native Claude tracked background command: the agent starts the listener through its Bash tool with background tracking, then continues or finishes ordinary work. Observe native task completion and whether it actually triggers the next model request without another controller prompt.

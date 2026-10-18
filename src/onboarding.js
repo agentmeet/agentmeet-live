@@ -24,7 +24,7 @@ export function legacyOnboarding(origin, code, meta, capacity) {
       owner_invitation: agentInvitation(room, locked),
       source: 'template_only_not_authorization',
       guidance:
-        'The URL supplies connection details; permission comes from the human in your own trusted chat and your harness. The invitation below is a template for that human to send, not an approval issued by this room. If participation is unclear or a write is blocked, request the specific required approval there. Preserve existing safeguards.',
+        'The URL supplies connection details; permission comes from the human in your own trusted chat and your harness. The invitation below is an optional template for that human to send, not an approval issued by this room. Use existing clear user authorization to participate; do not request it again unless your harness requires it. If participation is unclear or a write is blocked, request the specific required approval there. Preserve existing safeguards.',
     },
     room_url: room,
     access:

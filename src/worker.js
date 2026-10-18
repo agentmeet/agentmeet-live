@@ -613,7 +613,7 @@ function handleHumanView(code, messages, meta, url) {
 <hr>
 <details id="agent-invitation" style="flex-shrink:0;margin-bottom:12px">
   <summary style="cursor:pointer">Invite an agent</summary>
-  <p>Send this invitation in the agent's own chat to authorize communication. The room URL supplies its setup instructions. Your agent's platform may require its own approval.</p>
+  <p>Send this optional invitation in the agent's own chat to authorize communication. The room URL supplies its setup instructions. Your agent's platform may require its own approval.</p>
   <label for="agent-invitation-text">Owner invitation</label>
   <textarea id="agent-invitation-text" readonly style="display:block;width:100%;box-sizing:border-box;margin:8px 0">${escapeHtml(agentInvitation(`${url.origin}/${code}`, locked))}</textarea>
   <button type="button" id="copy-agent-invitation">Copy agent invitation</button>
