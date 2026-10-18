@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import { Miniflare, convertV4MiniflareOptions, Log, LogLevel } from 'miniflare';
+import { workerSource } from './test-source.mjs';
+const source = await workerSource();
+const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: source, compatibilityDate: '2024-12-01',
+  durableObjects: { ROOMS: { className: 'RoomDO', useSQLite: false }, PROJECT_ROOMS: { className: 'ProjectRoomDO', useSQLite: true } }, log: new Log(LogLevel.NONE) }));
+try {
+  const call = async (path, token, method='GET', body, key) => {
+    const response = await mf.dispatchFetch('http://localhost/v2/rooms'+path, { method, headers: { ...(token?{Authorization:'Bearer '+token}:{}), ...(body!==undefined?{'Content-Type':'application/json'}:{}), ...(key?{'Idempotency-Key':key}:{}) }, ...(body===undefined?{}:{body:JSON.stringify(body)}) });
+    const data=await response.json(); return { status:response.status, data };
+  };
+  const created = await call('',null,'POST',{nick:'owner',title:'Protected project'});
+  assert.equal(created.status,201,JSON.stringify(created));
+  const root='/'+created.data.room.id; const owner=created.data.token;
+  assert.equal((await call(root)).status,401);
+  assert.equal((await call(root,'am2_'+'0'.repeat(64))).status,401);
+  assert.equal((await call(root+'/bootstrap',null,'POST',{nick:'attacker'})).status,404);
+  assert.equal((await call(root+'/participants',owner,'POST',{nick:'OWNER'})).status,409);
+  assert.equal((await call(root+'/participants',owner,'POST',{nick:'spoof',role:'owner'})).status,400);
+  const member=await call(root+'/participants',owner,'POST',{nick:'worker'});
+  const guest=await call(root+'/participants',owner,'POST',{nick:'reader',role:'guest'});
+  assert.equal(member.status,201); assert.equal(guest.status,201);
+  assert.equal((await call(root+'/participants',member.data.token,'POST',{nick:'unauthorized'})).status,403);
+  assert.equal((await call(root+'/messages',guest.data.token,'POST',{text:'guest write'},'guest-key')).status,403);
+  const payload={text:'# Package\n'+('漢'.repeat(3000)),kind:'MAP_READY',data:{types:Array.from({length:21},(_,i)=>({name:'type'+i,sha256:'a'.repeat(64),changed_maps:['albedo','normal']}))},to:[member.data.participant.id]};
+  const sent=await call(root+'/messages',owner,'POST',payload,'package-001');
+  assert.equal(sent.status,201,JSON.stringify(sent)); assert.equal(sent.data.message.seq,1);
+  const retries=await Promise.all(Array.from({length:8},()=>call(root+'/messages',owner,'POST',payload,'package-001')));
+  assert.ok(retries.every(r=>r.status===200&&r.data.message.id===sent.data.message.id));
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'changed'},'package-001')).status,409);
+  assert.equal((await call(root+'/messages',owner,'POST',payload,'package-002')).status,201,'different keys allow intentional repeats');
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'a'.repeat(32769)},'oversize-text')).status,413);
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'bad\ud800'},'badunicode')).status,400);
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'bad',reply_to:'other-room-message'},'bad-reply')).status,400);
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'bad',to:['other-room-actor']},'bad-recipient')).status,400);
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'x',extra:true},'bad-extra')).status,400);
+  assert.equal((await call(root+'/messages',owner,'POST',{text:'no key'})).status,400);
+  for (const invalid of [{text:null},{kind:null,text:'bad'},{to:null,text:'bad'},{references:null,text:'bad'}]) assert.equal((await call(root+'/messages',owner,'POST',invalid,'invalid-type')).status,400);
+  assert.equal((await call('',null,'POST',{nick:'bad-owner',title:false})).status,400);
+  const posted=await Promise.all(Array.from({length:205},(_,i)=>call(root+'/messages',member.data.token,'POST',{text:'batch '+i,reply_to:sent.data.message.id},'batch-'+String(i).padStart(8,'0'))));
+  assert.ok(posted.every(r=>r.status===201));
+  const ids=new Set(); let cursor=''; let pages=0;
+  do {
+    const page=await call(root+'/messages?limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''),owner);
+    assert.equal(page.status,200); for(const message of page.data.messages)ids.add(message.id);
+    cursor=page.data.next_cursor; pages++; if(!page.data.has_more)break;
+  } while(pages<10);
+  assert.equal(ids.size,207); assert.equal(pages,5);
+  assert.equal((await call(root+'/messages?cursor='+encodeURIComponent(cursor),owner)).data.messages.length,0);
+  const other=await call('',null,'POST',{nick:'other-owner'});
+  assert.equal((await call('/'+other.data.room.id+'/messages?cursor='+encodeURIComponent(cursor),other.data.token)).status,400);
+  assert.equal((await call(root+'/messages/'+sent.data.message.id,owner)).data.message.text,payload.text);
+  let exported=[]; cursor=''; let snapshot;
+  do {
+    const page=await call(root+'/export?limit=200'+(cursor?'&cursor='+encodeURIComponent(cursor)+'&snapshot='+snapshot:''),owner);
+    assert.equal(page.status,200); assert.ok(page.data.checksum.value.match(/^[a-f0-9]{64}$/));
+    assert.ok(!JSON.stringify(page.data).includes(owner));
+    assert.ok(!JSON.stringify(page.data).includes('token_hash'));
+    exported.push(...page.data.messages);cursor=page.data.next_cursor;snapshot=page.data.snapshot_seq;
+    if(!page.data.has_more)break;
+  }while(true);
+  assert.equal(exported.length,207);
+  const rotation=await call(root+'/participants/'+member.data.participant.id+'/rotate',member.data.token,'POST',{});
+  assert.equal(rotation.status,200);
+  assert.equal((await call(root,member.data.token)).status,401);
+  assert.equal((await call(root,rotation.data.token)).status,200);
+  assert.equal((await call(root+'/participants/'+member.data.participant.id+'/revoke',owner,'POST',{})).status,200);
+  assert.equal((await call(root,rotation.data.token)).status,401);
+  assert.equal((await call(root+'/participants/'+created.data.participant.id+'/revoke',owner,'POST',{})).status,409);
+  console.log('PASS: protected SQLite rooms, scoped actors/rotation/revocation, atomic idempotency, 21-type handoffs, references, complete cursor/export paging and cross-room rejection');
+} finally { await mf.dispose(); }

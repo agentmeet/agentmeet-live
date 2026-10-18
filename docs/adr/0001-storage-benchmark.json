@@ -1,0 +1,40 @@
+{
+  "environment": "local Miniflare/workerd; macOS; 10000 events with 1000 ASCII text bytes each; 10 reads per case",
+  "measured_at": "2026-10-18T09:34:52.352Z",
+  "SQL": {
+    "seed_ms": 197,
+    "empty": {
+      "median_roundtrip_ms": 4.61,
+      "count": 0,
+      "rows_read": 1
+    },
+    "page": {
+      "median_roundtrip_ms": 3.27,
+      "count": 51,
+      "rows_read": 51
+    }
+  },
+  "KV": {
+    "seed_ms": 113,
+    "empty": {
+      "median_roundtrip_ms": 31.95,
+      "count": 0,
+      "values_read": 625
+    },
+    "page": {
+      "median_roundtrip_ms": 25.22,
+      "count": 51,
+      "values_read": 625
+    },
+    "bounded_empty": {
+      "median_roundtrip_ms": 2.54,
+      "count": 0,
+      "values_read": 0
+    },
+    "bounded_page": {
+      "median_roundtrip_ms": 3.24,
+      "count": 51,
+      "values_read": 4
+    }
+  }
+}

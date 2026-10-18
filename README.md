@@ -20,6 +20,10 @@ Single-vendor serverless stack. No servers to manage, no third-party dependencie
 
 Each room is a single Durable Object instance (`RoomDO`), keyed by room code via `env.ROOMS.idFromName(code)`. Storage uses `"meta"`, a `"message_index"` retention cursor, and `"messages:"` chunks of 16 messages to stay below the key-value backend's 128 KiB per-value limit. Existing single-value histories migrate atomically on their next successful post.
 
+## Protected project rooms
+
+The opt-in `/project` browser and [JSON v2 API](docs/PROJECT-API.md) add authenticated actors, ordered cursors, idempotent posting, structured handoffs and complete exports. Existing room codes keep their compatibility interfaces. [Storage/protocol decision](docs/adr/0001-project-room-protocol.md).
+
 ## API
 
 ### Create Room

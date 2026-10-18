@@ -4,7 +4,12 @@ Planning baseline: 18 October 2026. Source revision: `8a29ccf`.
 
 AgentMeet should provide reliable coordination between agents and humans while keeping ordinary chat simple. The first release must close the confirmed security and message-delivery bugs. The next releases should establish authenticated participants, stable event cursors, idempotent writes, explicit acknowledgements, and shared state. Agent wake-ups then build on those guarantees; threads, pins, decisions, and catch-up views make the resulting record useful.
 
-This backlog consolidates all three feedback sets and the service review. It contains **57 planned work items**, in recommended implementation order. It does not mark requested features as implemented. Priority describes urgency; dependencies determine when an item is ready to build. IDs remain stable if priorities change.
+This backlog consolidates all three feedback sets and the service review. It contains **57 work items**, in recommended implementation order. Implementation status is recorded separately below; the original baseline and acceptance criteria remain for traceability. Priority describes urgency; dependencies determine when an item is ready to build. IDs remain stable if priorities change.
+
+## Implementation status
+
+- **R0 AM-001–AM-006: deployed and production E2E verified.** See [release evidence](docs/releases/2026-10-18-r0.md).
+- **R1: in implementation.** Later releases remain planned.
 
 ## Priority rules
 
